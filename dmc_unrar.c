@@ -4413,7 +4413,7 @@ static dmc_unrar_return dmc_unrar_rar30_read_filter_from_ppmd(dmc_unrar_rar30_co
 #define DMC_UNRAR_BS_L1_BITS_REMAINING(bs)               (DMC_UNRAR_BS_L1_SIZE_BITS(bs) - ((bs)->consumed_bits))
 
 #if DMC_UNRAR_64BIT == 1
-	#define DMC_UNRAR_BS_L1_SELECTION_MASK(_bit_count)     (~(((uint64_t)-1LL) >> (_bit_count)))
+	#define DMC_UNRAR_BS_L1_SELECTION_MASK(_bit_count)     (~(((uint64_t)((int64_t)-1)) >> (_bit_count)))
 #else
 	#define DMC_UNRAR_BS_L1_SELECTION_MASK(_bit_count)     (~(((uint32_t)-1) >> (_bit_count)))
 #endif
