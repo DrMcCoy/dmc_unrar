@@ -371,6 +371,12 @@ typedef struct dmc_unrar_archive_tag {
 /** Return a human-readable description of a return code. */
 const char *dmc_unrar_strerror(dmc_unrar_return code);
 
+/** Detect whether an IO structure contains a RAR archive. */
+bool dmc_unrar_is_rar(dmc_unrar_io *io);
+
+/** Detect whether a the memory region contains a RAR archive. */
+bool dmc_unrar_is_rar_mem(const void *mem, size_t size);
+
 /** Initialize/clear this archive struct.
  *
  *  @param  archive A valid pointer to an archive structure to initialize.
@@ -895,8 +901,30 @@ static bool dmc_unrar_archive_read_uint32le(dmc_unrar_io *io, uint32_t *value) {
 /* '--- */
 
 /* .--- Opening/closing a RAR archive */
-static int dmc_unrar_identify_generation(dmc_unrar_archive *archive);
+static int dmc_unrar_identify_generation(dmc_unrar_io *io);
 static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archive);
+
+bool dmc_unrar_is_rar(dmc_unrar_io *io) {
+	int generation;
+
+	if (!io)
+		return false;
+
+	generation = dmc_unrar_identify_generation(io);
+	return generation > (int)DMC_UNRAR_GENERATION_INVALID;
+}
+
+bool dmc_unrar_is_rar_mem(const void *mem, size_t size) {
+	dmc_unrar_mem_reader mem_reader;
+	dmc_unrar_io io;
+
+	if (!mem || !size)
+		return false;
+
+	dmc_unrar_io_init_mem_reader(&io, &mem_reader, mem, size);
+
+	return dmc_unrar_is_rar(&io);
+}
 
 dmc_unrar_return dmc_unrar_archive_init(dmc_unrar_archive *archive) {
 	if (!archive)
@@ -1054,7 +1082,7 @@ static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archi
 
 	/* Identify the RAR generation (RAR4? RAR5?). */
 	{
-		int generation = dmc_unrar_identify_generation(archive);
+		int generation = dmc_unrar_identify_generation(&archive->io);
 		if (generation < 0)
 			return (dmc_unrar_return)-generation;
 
@@ -1098,29 +1126,29 @@ static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archi
  *  TODO: We might want to search for the earliest occurrence of a
  *  magic number? That way, we could support self-extracting
  *  archives, which are EXE files with RARs pasted at the end. */
-static int dmc_unrar_identify_generation(dmc_unrar_archive *archive) {
+static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
 	static const uint8_t DMC_UNRAR_MAGIC_13[] = { 0x52, 0x45, 0x7E, 0x5E };
 	static const uint8_t DMC_UNRAR_MAGIC_15[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00 };
 	static const uint8_t DMC_UNRAR_MAGIC_50[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00 };
 
 	uint8_t magic[8];
 
-	DMC_UNRAR_ASSERT(archive);
+	DMC_UNRAR_ASSERT(io);
 
-	if (!dmc_unrar_archive_seek(&archive->io, 0))
+	if (!dmc_unrar_archive_seek(io, 0))
 		return -DMC_UNRAR_SEEK_FAIL;
 
-	if (!dmc_unrar_archive_read_checked(&archive->io, magic, 4))
+	if (!dmc_unrar_archive_read_checked(io, magic, 4))
 		return -DMC_UNRAR_READ_FAIL;
 	if (!memcmp(magic, DMC_UNRAR_MAGIC_13, 4))
 		return DMC_UNRAR_GENERATION_ANCIENT;
 
-	if (!dmc_unrar_archive_read_checked(&archive->io, magic + 4, 3))
+	if (!dmc_unrar_archive_read_checked(io, magic + 4, 3))
 		return -DMC_UNRAR_READ_FAIL;
 	if (!memcmp(magic, DMC_UNRAR_MAGIC_15, 7))
 		return DMC_UNRAR_GENERATION_RAR4;
 
-	if (!dmc_unrar_archive_read_checked(&archive->io, magic + 7, 1))
+	if (!dmc_unrar_archive_read_checked(io, magic + 7, 1))
 		return -DMC_UNRAR_READ_FAIL;
 	if (!memcmp(magic, DMC_UNRAR_MAGIC_50, 8))
 		return DMC_UNRAR_GENERATION_RAR5;
