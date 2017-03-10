@@ -4885,7 +4885,7 @@ static dmc_unrar_return dmc_unrar_huff_create(dmc_unrar_alloc *alloc, dmc_unrar_
 	uint8_t max_length, size_t code_count, const uint32_t *codes, const uint8_t *lengths,
 	const uint32_t *symbols) {
 
-	dmc_unrar_return return_code;
+	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
 	DMC_UNRAR_ASSERT(alloc && huff);
 	DMC_UNRAR_ASSERT(codes && lengths && symbols);
@@ -4901,19 +4901,23 @@ static dmc_unrar_return dmc_unrar_huff_create(dmc_unrar_alloc *alloc, dmc_unrar_
 
 	return_code = dmc_unrar_huff_create_tree(huff, max_length, code_count, codes, lengths, symbols);
 	if (return_code != DMC_UNRAR_OK)
-		return return_code;
+		goto fail;
 
 	return_code = dmc_unrar_huff_create_table(huff, max_length);
 	if (return_code != DMC_UNRAR_OK)
-		return return_code;
+		goto fail;
 
 	return DMC_UNRAR_OK;
+
+fail:
+	dmc_unrar_huff_destroy(huff);
+	return return_code;
 }
 
 static dmc_unrar_return dmc_unrar_huff_create_from_lengths(dmc_unrar_alloc *alloc,
 		dmc_unrar_huff *huff, const uint8_t *lengths, size_t code_count, uint8_t max_length) {
 
-	dmc_unrar_return return_code;
+	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
 	DMC_UNRAR_ASSERT(alloc && huff && lengths);
 	DMC_UNRAR_ASSERT(code_count > 0);
@@ -4925,13 +4929,17 @@ static dmc_unrar_return dmc_unrar_huff_create_from_lengths(dmc_unrar_alloc *allo
 
 	return_code = dmc_unrar_huff_create_tree_from_lengths(huff, lengths, code_count, max_length);
 	if (return_code != DMC_UNRAR_OK)
-		return return_code;
+		goto fail;
 
 	return_code = dmc_unrar_huff_create_table(huff, max_length);
 	if (return_code != DMC_UNRAR_OK)
-		return return_code;
+		goto fail;
 
 	return DMC_UNRAR_OK;
+
+fail:
+	dmc_unrar_huff_destroy(huff);
+	return return_code;
 }
 
 static void dmc_unrar_huff_destroy(dmc_unrar_huff *huff) {
