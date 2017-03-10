@@ -7003,11 +7003,15 @@ static dmc_unrar_return dmc_unrar_filters_create(dmc_unrar_alloc *alloc,
 
 	DMC_UNRAR_CLEAR_OBJ(*filters->internal_state);
 
-	if (!dmc_unrar_filters_init_filters(filters))
+	if (!dmc_unrar_filters_init_filters(filters)) {
+		dmc_unrar_filters_destroy(filters);
 		return DMC_UNRAR_ALLOC_FAIL;
+	}
 
-	if (!dmc_unrar_filters_init_stack(filters))
+	if (!dmc_unrar_filters_init_stack(filters)) {
+		dmc_unrar_filters_destroy(filters);
 		return DMC_UNRAR_ALLOC_FAIL;
+	}
 
 	return DMC_UNRAR_OK;
 }
