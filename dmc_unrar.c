@@ -66,6 +66,14 @@
 
 /* Version history:
  *
+ * Friday, 2017-03-10 (Version 1.1.0)
+ * - Added dmc_unrar_is_rar() and dmc_unrar_is_rar_mem()
+ * - Removed extra allocation in dmc_unrar_huff_create_from_lengths()
+ * - Replaced a long long integer constant with a cast
+ * - Plugged memory leak on fail in huffman decoder create func
+ * - Plugged memory leak on fail in filter create func
+ * - Implemented RAR 5.0 unpacking
+ *
  * Thursday, 2017-03-09 (Version 1.0.0)
  * - Initial public release of dmc_unrar
  */
