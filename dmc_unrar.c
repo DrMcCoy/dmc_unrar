@@ -66,7 +66,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version 1.2.0)
+ * Saturday, 2017-03-11 (Version 1.2.0)
  * - Added support for solid archives (on all versions)
  *
  * Friday, 2017-03-10 (Version 1.1.0)
