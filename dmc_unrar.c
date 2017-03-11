@@ -31,13 +31,13 @@
  * - Unpacking RAR versions 5.0 (aka RAR5, WinRAR 5.0)
  *   - Including delta, x86, ARM
  * - Solid archives (1.5, 2.0/2.6, 2.9/3.6, 5.0)
+ * - Validating extraction result against archive CRC-32
  *
  * Features we don't support (in rough order from easiest to difficult)
  * - Opening SFX archives
  * - Archive and file comments
  * - Detailed file attributes and permissions
  * - Validating UTF-8 filenames
- * - Validating the checksums
  * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
@@ -65,6 +65,10 @@
  */
 
 /* Version history:
+ *
+ * Someday, ????-??-?? (Version 1.3.0)
+ * - Added CRC-32 validation after file extraction
+ * - Made dmc_unrar_crc32_calculate_from_mem() public
  *
  * Saturday, 2017-03-11 (Version 1.2.0)
  * - Added support for solid archives (on all versions)
@@ -270,6 +274,7 @@ typedef enum {
 	DMC_UNRAR_FILE_IS_DIRECTORY,
 
 	DMC_UNRAR_FILE_SOLID_BROKEN,
+	DMC_UNRAR_FILE_CRC32_FAIL,
 
 	DMC_UNRAR_FILE_UNSUPPORTED_VERSION,
 	DMC_UNRAR_FILE_UNSUPPORTED_METHOD,
@@ -352,7 +357,9 @@ typedef struct dmc_unrar_file_tag {
 	/** The operating system on which the file was packed into the RAR. */
 	dmc_unrar_host_os host_os;
 
-	uint32_t crc;      /**< Checksum. */
+	bool has_crc; /**< Does this file entry have a checksum? */
+
+	uint32_t crc;      /**< Checksum (CRC-32, 0xEDB88320 polynomial). */
 	uint32_t dos_time; /**< File creation timestamp, in MS-DOS format. */
 	uint64_t attrs;    /**< File attributes, host_os-specific. */
 
@@ -456,17 +463,43 @@ bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index);
  *  Otherwise, the return code gives an idea why we don't have support. */
 dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t index);
 
-/** Extract a file entry into a pre-allocated memory buffer. */
+/** Extract a file entry into a pre-allocated memory buffer.
+ *
+ *  @param  archive The archive to extract from.
+ *  @param  index The index of the file entry to extract.
+ *  @param  buffer The pre-allocated memory buffer to extract into.
+ *  @param  buffer_size The size of the pre-allocated memory buffer.
+ *  @param  uncompressed_size If != NULL, the number of bytes written
+ *          to the buffer will be stored here.
+ *  @param  validate_crc If true, validate the uncompressed data against
+ *          the CRC-32 stored within the archive. If the validation fails,
+ *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
+ *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
+ */
 dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_t index,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size);
+	void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc);
 
-/** Extract a file entry into a dynamically allocated heap buffer. */
+/** Extract a file entry into a dynamically allocated heap buffer.
+ *
+ *  @param  archive The archive to extract from.
+ *  @param  index The index of the file entry to extract.
+ *  @param  buffer The heap-allocated memory buffer will be stored here.
+ *  @param  uncompressed_size The size of the heap-allocated memory buffer
+ *          will be stored here. Must not be NULL.
+ *  @param  validate_crc If true, validate the uncompressed data against
+ *          the CRC-32 stored within the archive. If the validation fails,
+ *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
+ *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
+ */
 dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size_t index,
-	void **buffer, size_t *uncompressed_size);
+	void **buffer, size_t *uncompressed_size, bool validate_crc);
 
 /** Decode the given DOS date/time value into its component parts. */
 void dmc_unrar_decode_dos_time(uint32_t dos_time,
 	int *year, int *month, int *day, int *hour, int *minute, int *second);
+
+/** Calculate a CRC-32 (0xEDB88320 polynomial) checksum from this memory region. */
+uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
 
 #ifdef __cplusplus
 }
@@ -558,6 +591,9 @@ const char *dmc_unrar_strerror(dmc_unrar_return code) {
 
 		case DMC_UNRAR_FILE_SOLID_BROKEN:
 			return "File entry is part of a broken solid block";
+
+		case DMC_UNRAR_FILE_CRC32_FAIL:
+			return "File CRC-32 checksum mismatch";
 
 		case DMC_UNRAR_FILE_UNSUPPORTED_VERSION:
 			return "Unsupported compression version";
@@ -1539,6 +1575,8 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 		file->file.host_os = (dmc_unrar_host_os)host_os;
 	}
 
+	file->file.has_crc = true;
+
 	if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.crc))
 		return DMC_UNRAR_READ_FAIL;
 	if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.dos_time))
@@ -1763,8 +1801,10 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 			return DMC_UNRAR_READ_FAIL;
 
 	/* Checksum. */
-	file->file.crc = 0;
-	if (file->flags & DMC_UNRAR_FLAG5_FILE_HASCRC)
+	file->file.has_crc = (file->flags & DMC_UNRAR_FLAG5_FILE_HASCRC) != 0;
+	file->file.crc     = 0;
+
+	if (file->file.has_crc)
 		if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.crc))
 			return DMC_UNRAR_READ_FAIL;
 
@@ -2341,11 +2381,16 @@ void dmc_unrar_decode_dos_time(uint32_t dos_time,
 }
 
 /* .--- Extracting file entries */
+static bool dmc_unrar_file_validate_checksum(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
+	const void *buffer, size_t buffer_size);
+
 static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
 	uint8_t *buffer, size_t buffer_size, size_t *uncompressed_size);
 
 dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_t index,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size) {
+		void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc) {
+
+	size_t output_size;
 
 	if (!buffer)
 		return DMC_UNRAR_ARCHIVE_EMPTY;
@@ -2366,20 +2411,26 @@ dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_
 
 		{
 			dmc_unrar_return uncompressed =
-				dmc_unrar_file_extract(archive, file, (uint8_t *)buffer, buffer_size, uncompressed_size);
+				dmc_unrar_file_extract(archive, file, (uint8_t *)buffer, buffer_size, &output_size);
 
 			if (uncompressed != DMC_UNRAR_OK)
 				return uncompressed;
 		}
+
+		if (uncompressed_size)
+			*uncompressed_size = output_size;
+
+		if (validate_crc)
+			if (!dmc_unrar_file_validate_checksum(archive, file, buffer, output_size))
+				return DMC_UNRAR_FILE_CRC32_FAIL;
 	}
 
 	return DMC_UNRAR_OK;
 }
 
-
 /** Extract a file entry into a dynamically allocated heap buffer. */
 dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size_t index,
-		void **buffer, size_t *uncompressed_size) {
+		void **buffer, size_t *uncompressed_size, bool validate_crc) {
 
 	if (!buffer || !uncompressed_size)
 		return DMC_UNRAR_ARCHIVE_EMPTY;
@@ -2400,7 +2451,8 @@ dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size
 		{
 			dmc_unrar_return extracted =
 				dmc_unrar_extract_file_to_mem(archive, index, heap_buffer,
-				                              file->file.uncompressed_size, uncompressed_size);
+				                              file->file.uncompressed_size, uncompressed_size,
+				                              validate_crc);
 
 			if (extracted != DMC_UNRAR_OK) {
 				dmc_unrar_free(&archive->alloc, buffer);
@@ -2509,6 +2561,22 @@ static dmc_unrar_return dmc_unrar_file_unpack(dmc_unrar_archive *archive,
 
 	return dmc_unrar_rar_context_unpack(archive->internal_state->unpack_context,
 		archive, file, buffer, buffer_size, uncompressed_size);
+}
+
+static bool dmc_unrar_file_validate_checksum(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
+		const void *buffer, size_t buffer_size) {
+
+	uint32_t calculated_crc;
+
+	DMC_UNRAR_ASSERT(archive && archive->internal_state && file && buffer);
+
+	/* No checksum? Then we can't validate it. Just assume it checks out. */
+	if (!file->file.has_crc)
+		return true;
+
+	calculated_crc = dmc_unrar_crc32_calculate_from_mem(buffer, buffer_size);
+
+	return calculated_crc == file->file.crc;
 }
 /* '--- */
 
@@ -2690,12 +2758,6 @@ static dmc_unrar_return dmc_unrar_ppmd_restart(dmc_unrar_ppmd *ppmd, dmc_unrar_b
 
 static uint8_t dmc_unrar_ppmd_get_byte(dmc_unrar_ppmd *ppmd);
 #endif /* DMC_UNRAR_DISABLE_PPMD */
-/* '--- */
-
-/* .--- CRC32 interface */
-#if DMC_UNRAR_DISABLE_FILTERS != 1
-static uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
-#endif /* DMC_UNRAR_DISABLE_FILTERS */
 /* '--- */
 
 /* .--- Filters interface */
@@ -8199,7 +8261,7 @@ static uint8_t dmc_unrar_ppmd_get_byte(dmc_unrar_ppmd *ppmd) {
 #endif /* DMC_UNRAR_DISABLE_PPMD */
 /* '--- */
 
-/* .--- CRC32, based on the implementation by Gary S. Brown ---.
+/* .--- CRC-32, based on the implementation by Gary S. Brown ---.
  *
  * The original copyright note stated as follows:
  * You may use this program, or code or tables extracted from it,
@@ -8208,8 +8270,7 @@ static uint8_t dmc_unrar_ppmd_get_byte(dmc_unrar_ppmd *ppmd) {
  * See also <http://web.mit.edu/freebsd/head/sys/libkern/crc32.c>
  */
 
-#if DMC_UNRAR_DISABLE_FILTERS != 1
-/** Table of CRC32 polynomial feedback terms. */
+/** Table of CRC-32 polynomial feedback terms, 0xEDB88320 polynomial. */
 static const uint32_t DMC_UNRAR_CRC32_TABLE[] = {
 	0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA, 0x076DC419, 0x706AF48F,
 	0xE963A535, 0x9E6495A3, 0x0EDB8832, 0x79DCB8A4, 0xE0D5E91E, 0x97D2D988,
@@ -8256,7 +8317,7 @@ static const uint32_t DMC_UNRAR_CRC32_TABLE[] = {
 	0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
-static uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size) {
+uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size) {
 	const uint8_t *bytes = (const uint8_t *)mem;
 	uint32_t hash = 0xFFFFFFFF;
 
@@ -8267,7 +8328,6 @@ static uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size)
 
 	return hash;
 }
-#endif /* DMC_UNRAR_DISABLE_FILTERS */
 /* '--- */
 
 /* .--- Filters implementation */
