@@ -65,7 +65,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version 1.3.0)
+ * Sunday, 2017-03-12 (Version 1.3.0)
  * - Fixed a segfault when opening an archive fails
  * - Added CRC-32 validation after file extraction
  * - Made dmc_unrar_crc32_calculate_from_mem() public
