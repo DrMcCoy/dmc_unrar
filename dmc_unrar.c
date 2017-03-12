@@ -31,10 +31,10 @@
  * - Unpacking RAR versions 5.0 (aka RAR5, WinRAR 5.0)
  *   - Including delta, x86, ARM
  * - Solid archives (1.5, 2.0/2.6, 2.9/3.6, 5.0)
+ * - SFX archives
  * - Validating extraction result against archive CRC-32
  *
  * Features we don't support (in rough order from easiest to difficult)
- * - Opening SFX archives
  * - Archive and file comments
  * - Detailed file attributes and permissions
  * - Large files (>= 2GB)
@@ -72,6 +72,7 @@
  * - Added dmc_unrar_unicode_is_valid_utf8()
  * - Added dmc_unrar_unicode_make_valid_utf8()
  * - Added archive reading functions using stdio file
+ * - Added support for SFX archives
  *
  * Saturday, 2017-03-11 (Version 1.2.0)
  * - Added support for solid archives (on all versions)
@@ -593,6 +594,8 @@ uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
 #define DMC_UNRAR_MAX(a,b) (((a)>(b))?(a):(b))
 #define DMC_UNRAR_MIN(a,b) (((a)<(b))?(a):(b))
 #define DMC_UNRAR_ABS(a)   (((a)<0)?-(a):(a))
+
+#define DMC_UNRAR_ARRAYSIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #define DMC_UNRAR_CLEAR_OBJ(obj)     memset(&(obj), 0, sizeof(obj))
 #define DMC_UNRAR_CLEAR_OBJS(obj, n) memset((obj), 0, (n) * sizeof((obj)[0]))
@@ -1583,37 +1586,104 @@ static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archi
 /* '--- */
 
 /* .--- RAR generation */
-/** Identify a RAR file generation by its magic number.
- *
- *  TODO: We might want to search for the earliest occurrence of a
- *  magic number? That way, we could support self-extracting
- *  archives, which are EXE files with RARs pasted at the end. */
-static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
+static void *dmc_unrar_memmem(const void *haystack, size_t haystack_size,
+                              const void *needle, size_t needle_size) {
+
+	char *cur, *last;
+	const char *haystack_char = (const char *)haystack;
+	const char *needle_char   = (const char *)needle;
+
+	/* We need something to compare. */
+	if (haystack_size == 0 || needle_size == 0)
+		return NULL;
+
+	/* "needle" must be smaller or equal to "haystack". */
+	if (haystack_size < needle_size)
+		return NULL;
+
+	/* Special case where needle_size == 1. */
+	if (needle_size == 1)
+		return memchr((void *)haystack, (int)*needle_char, haystack_size);
+
+	/* The last position where it's possible to find "needle" in "haystack". */
+	last = (char *)haystack_char + haystack_size - needle_size;
+
+	for (cur = (char *)haystack_char; cur <= last; cur++)
+		if (cur[0] == needle_char[0] && memcmp(cur, needle_char, needle_size) == 0)
+			return cur;
+
+	return NULL;
+}
+
+typedef struct dmc_unrar_magic_tag {
+	const void *magic;
+	size_t size;
+	dmc_unrar_generation gen;
+
+} dmc_unrar_magic;
+
+static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t buffer_size, size_t *offset) {
 	static const uint8_t DMC_UNRAR_MAGIC_13[] = { 0x52, 0x45, 0x7E, 0x5E };
 	static const uint8_t DMC_UNRAR_MAGIC_15[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00 };
 	static const uint8_t DMC_UNRAR_MAGIC_50[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00 };
 
-	uint8_t magic[8];
+	static const dmc_unrar_magic DMC_UNRAR_MAGICS[] = {
+		{ DMC_UNRAR_MAGIC_50, DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGIC_50), DMC_UNRAR_GENERATION_RAR5 },
+		{ DMC_UNRAR_MAGIC_15, DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGIC_15), DMC_UNRAR_GENERATION_RAR4 },
+		{ DMC_UNRAR_MAGIC_13, DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGIC_13), DMC_UNRAR_GENERATION_ANCIENT }
+	};
+
+	size_t i;
+	for (i = 0; i < DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGICS); i++) {
+		const uint8_t *found = (const uint8_t *)dmc_unrar_memmem(buffer, buffer_size,
+		                       DMC_UNRAR_MAGICS[i].magic, DMC_UNRAR_MAGICS[i].size);
+
+		if (found) {
+			*offset = (found - buffer) + DMC_UNRAR_MAGICS[i].size;
+
+			return DMC_UNRAR_MAGICS[i].gen;
+		}
+	}
+
+	return DMC_UNRAR_GENERATION_INVALID;
+}
+
+/** Identify a RAR file generation by its magic number. */
+static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
+	size_t buffer_size, read_count;
+	uint8_t buffer[4096];
 
 	DMC_UNRAR_ASSERT(io);
 
 	if (!dmc_unrar_archive_seek(io, 0))
 		return -DMC_UNRAR_SEEK_FAIL;
 
-	if (!dmc_unrar_archive_read_checked(io, magic, 4))
-		return -DMC_UNRAR_READ_FAIL;
-	if (!memcmp(magic, DMC_UNRAR_MAGIC_13, 4))
-		return DMC_UNRAR_GENERATION_ANCIENT;
+	read_count  = dmc_unrar_archive_read(io, buffer, 8);
+	buffer_size = read_count;
 
-	if (!dmc_unrar_archive_read_checked(io, magic + 4, 3))
-		return -DMC_UNRAR_READ_FAIL;
-	if (!memcmp(magic, DMC_UNRAR_MAGIC_15, 7))
-		return DMC_UNRAR_GENERATION_RAR4;
+	while (read_count != 0) {
+		size_t offset;
+		dmc_unrar_generation gen = dmc_unrar_find_generation(buffer, buffer_size, &offset);
 
-	if (!dmc_unrar_archive_read_checked(io, magic + 7, 1))
-		return -DMC_UNRAR_READ_FAIL;
-	if (!memcmp(magic, DMC_UNRAR_MAGIC_50, 8))
-		return DMC_UNRAR_GENERATION_RAR5;
+		if (gen != DMC_UNRAR_GENERATION_INVALID) {
+			if (!dmc_unrar_archive_seek(io, io->offset + offset - buffer_size))
+				return -DMC_UNRAR_SEEK_FAIL;
+
+			return gen;
+		}
+
+		{
+			size_t to_copy = DMC_UNRAR_MIN(8, buffer_size);
+			memmove(buffer, buffer + buffer_size - to_copy, to_copy);
+
+			buffer_size = to_copy;
+
+			read_count   = dmc_unrar_archive_read(io, buffer + buffer_size,
+			               DMC_UNRAR_ARRAYSIZE(buffer) - buffer_size);
+
+			buffer_size += read_count;
+		}
+	}
 
 	return DMC_UNRAR_GENERATION_INVALID;
 }
