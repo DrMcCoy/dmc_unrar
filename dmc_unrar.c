@@ -66,6 +66,7 @@
 /* Version history:
  *
  * Someday, ????-??-?? (Version 1.3.0)
+ * - Fixed a segfault when opening an archive fails
  * - Added CRC-32 validation after file extraction
  * - Made dmc_unrar_crc32_calculate_from_mem() public
  * - Added dmc_unrar_unicode_is_valid_utf8()
@@ -1197,9 +1198,6 @@ void dmc_unrar_archive_close(dmc_unrar_archive *archive) {
 	if (!archive)
 		return;
 
-	/* Destroy the saved unpack context, if we have one. */
-	dmc_unrar_rar_context_destroy(archive->internal_state->unpack_context);
-
 	/* If we have no deallocator, there's nothing we can do except clear the context. */
 	if (!archive->alloc.func_free) {
 		DMC_UNRAR_CLEAR_OBJ(*archive);
@@ -1212,6 +1210,10 @@ void dmc_unrar_archive_close(dmc_unrar_archive *archive) {
 
 	/* Deallocate the internal state. */
 	if (archive->internal_state) {
+
+		/* Destroy the saved unpack context, if we have one. */
+		dmc_unrar_rar_context_destroy(archive->internal_state->unpack_context);
+
 		dmc_unrar_free(&archive->alloc, archive->internal_state->unpack_context);
 
 		dmc_unrar_free(&archive->alloc, archive->internal_state->blocks);
