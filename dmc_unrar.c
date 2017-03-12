@@ -37,7 +37,6 @@
  * - Opening SFX archives
  * - Archive and file comments
  * - Detailed file attributes and permissions
- * - Validating UTF-8 filenames
  * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
@@ -69,6 +68,8 @@
  * Someday, ????-??-?? (Version 1.3.0)
  * - Added CRC-32 validation after file extraction
  * - Made dmc_unrar_crc32_calculate_from_mem() public
+ * - Added dmc_unrar_unicode_is_valid_utf8()
+ * - Added dmc_unrar_unicode_make_valid_utf8()
  *
  * Saturday, 2017-03-11 (Version 1.2.0)
  * - Added support for solid archives (on all versions)
@@ -449,8 +450,13 @@ const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t
 
 /** Get the filename of a RAR file entry, UTF-8 encoded.
  *
+ *  Note: the filename is *not* checked to make sure it contains fully
+ *  valid UTF-8 data. Use dmc_unrar_unicode_is_valid_utf8() and/or
+ *  dmc_unrar_unicode_make_valid_utf8() for that.
+ *
  *  Returns the number of bytes written to filename. If filename is NULL, this function
- *  returns the number of bytes needed to fully store the filename. */
+ *  returns the number of bytes needed to fully store the filename.
+ */
 size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 	char *filename, size_t filename_size);
 
@@ -497,6 +503,16 @@ dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size
 /** Decode the given DOS date/time value into its component parts. */
 void dmc_unrar_decode_dos_time(uint32_t dos_time,
 	int *year, int *month, int *day, int *hour, int *minute, int *second);
+
+/** Return true if the given \0-terminated string contains valid UTF-8 data. */
+bool dmc_unrar_unicode_is_valid_utf8(const char *str);
+
+/** Cut off the given \0-terminated string at the first invalid UTF-8 sequence.
+ *
+ *  @param str The string to check and potentially modify.
+ *  @return True if the string was modified, false otherwise.
+ */
+bool dmc_unrar_unicode_make_valid_utf8(char *str);
 
 /** Calculate a CRC-32 (0xEDB88320 polynomial) checksum from this memory region. */
 uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
@@ -1923,6 +1939,19 @@ static bool dmc_unrar_unicode_utf32_is_valid(uint32_t code) {
 	return (code <= DMC_UNRAR_UNICODE_CODEPOINT_MAX) && !dmc_unrar_unicode_utf16_is_surrogate(code);
 }
 
+static bool dmc_unrar_unicode_utf32_is_overlong(uint32_t code, size_t length) {
+	if (code < 0x00080)
+		return length != 1;
+
+	if (code < 0x00800)
+		return length != 2;
+
+	if (code < 0x10000)
+		return length != 3;
+
+	return length != 4;
+}
+
 /** Return the number of octets the Unicode codepoint takes as a UTF-8 code unit. */
 static size_t dmc_unrar_unicode_utf8_get_octect_count(uint32_t code) {
 	if (!dmc_unrar_unicode_utf32_is_valid(code))
@@ -1938,6 +1967,35 @@ static size_t dmc_unrar_unicode_utf8_get_octect_count(uint32_t code) {
 		return 3;
 
 	return 4;
+}
+
+/** Determine the length of an UTF-8 sequence by its first octet. */
+static size_t dmc_unrar_unicode_utf8_get_sequence_length(const uint8_t *data) {
+	if (!data)
+		return 0;
+
+	if       (*data        < 0x80)
+		return 1;
+	else if ((*data >> 5) == 0x06)
+		return 2;
+	else if ((*data >> 4) == 0x0E)
+		return 3;
+	else if ((*data >> 3) == 0x1E)
+		return 4;
+
+	return 0;
+}
+
+/** Do we have enough space in this \0-terminated string for n UTF-8 octets? */
+static bool dmc_unrar_unicode_utf8_has_space(const uint8_t *str, size_t n) {
+	if (!str)
+		return false;
+
+	while (n-- > 0)
+		if (!*str++)
+			return false;
+
+	return true;
 }
 
 /** Write the Unicode codepoint into the buffer, encoded as UTF-8. */
@@ -1965,6 +2023,58 @@ static bool dmc_unrar_unicode_utf8_put(uint8_t *data, uint32_t code) {
 	}
 
 	return true;
+}
+
+/** Read a UTF-8 sequence of length bytes. */
+static uint32_t dmc_unrar_unicode_utf8_get_sequence(const uint8_t *data, size_t length) {
+	uint32_t codepoint = 0;
+
+	switch (length) {
+		case 1:
+			codepoint = data[0];
+			break;
+
+		case 2:
+			codepoint = ((data[0] << 6) & 0x7FF) +
+			            ( data[1]       & 0x03F);
+			break;
+
+		case 3:
+			codepoint = ((data[0] << 12) & 0xFFFF) +
+			            ((data[1] <<  6) & 0x0FFF) +
+			            ( data[2]        & 0x993F);
+			break;
+
+		case 4:
+		codepoint = ((data[0] << 18) & 0x1FFFFF) +
+		            ((data[1] << 12) & 0x03FFFF) +
+		            ((data[2] <<  6) & 0x000FFF) +
+		            ( data[3]        & 0x00003F);
+			break;
+
+		default:
+			break;
+	}
+
+	return codepoint;
+}
+
+/* Read a UTF-8 sequence as a Unicode codepoint out of the buffer and return
+ * the length of the UTF-8 sequence in bytes. */
+static size_t dmc_unrar_unicode_utf8_get(const uint8_t *data, uint32_t *codepoint) {
+	if (!data || !codepoint)
+		return 0;
+
+	{
+		const size_t length = dmc_unrar_unicode_utf8_get_sequence_length(data);
+
+		if (!length || !dmc_unrar_unicode_utf8_has_space(data, length))
+			return 0;
+
+		*codepoint = dmc_unrar_unicode_utf8_get_sequence(data, length);
+
+		return length;
+	}
 }
 
 /* Combine the surrogate pair into a full Unicode codepoint. */
@@ -2018,6 +2128,46 @@ static bool dmc_unrar_unicode_utf16_to_utf8(const uint16_t *utf16_data, size_t u
 	}
 
 	return true;
+}
+
+static const char *dmc_unrar_utf8_get_first_invalid(const char *str) {
+	while (*str) {
+		uint32_t codepoint;
+		const size_t length = dmc_unrar_unicode_utf8_get((const uint8_t *)str, &codepoint);
+
+		if (!length)
+			return str;
+
+		if (!dmc_unrar_unicode_utf32_is_valid   (codepoint) ||
+		     dmc_unrar_unicode_utf32_is_overlong(codepoint, length))
+			return str;
+
+		str += length;
+	}
+
+	return NULL;
+}
+
+bool dmc_unrar_unicode_is_valid_utf8(const char *str) {
+	if (!str)
+		return false;
+
+	return dmc_unrar_utf8_get_first_invalid(str) == NULL;
+}
+
+bool dmc_unrar_unicode_make_valid_utf8(char *str) {
+	if (!str)
+		return false;
+
+	{
+		char *first_invalid = (char *)dmc_unrar_utf8_get_first_invalid(str);
+		if (!first_invalid)
+			return false;
+
+		*first_invalid = '\0';
+	}
+
+	return true;;
 }
 /* '--- */
 
