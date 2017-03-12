@@ -71,6 +71,7 @@
  * - Made dmc_unrar_crc32_calculate_from_mem() public
  * - Added dmc_unrar_unicode_is_valid_utf8()
  * - Added dmc_unrar_unicode_make_valid_utf8()
+ * - Added archive reading functions using stdio file
  *
  * Saturday, 2017-03-11 (Version 1.2.0)
  * - Added support for solid archives (on all versions)
@@ -119,6 +120,12 @@
  * Set DMC_UNRAR_DISABLE_BE32TOH_BE64TOH to 1 if you don't want that. */
 #ifndef DMC_UNRAR_DISABLE_BE32TOH_BE64TOH
 #define DMC_UNRAR_DISABLE_BE32TOH_BE64TOH 0
+#endif
+
+/* Set DMC_UNRAR_DISABLE_STDIO to 1 to disable functionality that use the
+ * stdio file open/read/write functions. */
+#ifndef DMC_UNRAR_DISABLE_STDIO
+#define DMC_UNRAR_DISABLE_STDIO 0
 #endif
 
 /* RAR 2.9/3.6 can optionally compress text using the PPMd algorithm.
@@ -215,6 +222,10 @@ typedef int bool;
 
 #endif /* __cplusplus */
 
+#if DMC_UNRAR_DISABLE_STDIO != 1
+#include <stdio.h>
+#endif
+
 /* --- System autodetection --- */
 
 /* Autodetecting whether we're on a 64-bit CPU. */
@@ -255,6 +266,7 @@ typedef enum {
 	DMC_UNRAR_NO_ALLOC,
 	DMC_UNRAR_ALLOC_FAIL,
 
+	DMC_UNRAR_OPEN_FAIL,
 	DMC_UNRAR_READ_FAIL,
 	DMC_UNRAR_SEEK_FAIL,
 
@@ -401,8 +413,16 @@ const char *dmc_unrar_strerror(dmc_unrar_return code);
 /** Detect whether an IO structure contains a RAR archive. */
 bool dmc_unrar_is_rar(dmc_unrar_io *io);
 
-/** Detect whether a the memory region contains a RAR archive. */
+/** Detect whether the memory region contains a RAR archive. */
 bool dmc_unrar_is_rar_mem(const void *mem, size_t size);
+
+#if DMC_UNRAR_DISABLE_STDIO != 1
+/* Detect whether this FILE contains a RAR archive. */
+bool dmc_unrar_is_rar_file(FILE *file);
+
+/* Detect whether the file at this path contains a RAR archive. */
+bool dmc_unrar_is_rar_path(const char *path);
+#endif /* DMC_UNRAR_DISABLE_STDIO */
 
 /** Initialize/clear this archive struct.
  *
@@ -437,6 +457,32 @@ dmc_unrar_return dmc_unrar_archive_open(dmc_unrar_archive *archive, uint64_t siz
  */
 dmc_unrar_return dmc_unrar_archive_open_mem(dmc_unrar_archive *archive,
 	const void *mem, size_t size);
+
+#if DMC_UNRAR_DISABLE_STDIO != 1
+/** Open this RAR archive from a stdio FILE, reading its block and file headers.
+ *  The func_alloc, func_realloc, func_free and opaque_mem fields may be set.
+ *  All other fields must have been cleared.
+ *
+ *  @param  archive Pointer to the archive structure to use. Needs to be a valid
+ *                  pointer, with the fields properly initialized and set.
+ *  @param  file The stdio FILE structure to read out of.
+ *  @return DMC_UNRAR_OK if the archive was successfully opened. Any other value
+ *          describes an error condition.
+ */
+dmc_unrar_return dmc_unrar_archive_open_file(dmc_unrar_archive *archive, FILE *file);
+
+/** Open this RAR archive from a path, opening the file with fopen(), and reading
+ *  its block and file headers. The func_alloc, func_realloc, func_free and
+ *   opaque_mem fields may be set. All other fields must have been cleared.
+ *
+ *  @param  archive Pointer to the archive structure to use. Needs to be a valid
+ *                  pointer, with the fields properly initialized and set.
+ *  @param  path The path of the file to fopen() and read out of.
+ *  @return DMC_UNRAR_OK if the archive was successfully opened. Any other value
+ *          describes an error condition.
+ */
+dmc_unrar_return dmc_unrar_archive_open_path(dmc_unrar_archive *archive, const char *path);
+#endif /* DMC_UNRAR_DISABLE_STDIO */
 
 /** Close this RAR archive again.
  *
@@ -566,6 +612,9 @@ const char *dmc_unrar_strerror(dmc_unrar_return code) {
 
 		case DMC_UNRAR_ALLOC_FAIL:
 			return "Memory allocation failed";
+
+		case DMC_UNRAR_OPEN_FAIL:
+			return "File open error";
 
 		case DMC_UNRAR_READ_FAIL:
 			return "Read error";
@@ -974,6 +1023,114 @@ static bool dmc_unrar_io_is_mem_reader(dmc_unrar_io *io) {
 }
 /* '--- */
 
+/* .--- File IO functions */
+#if DMC_UNRAR_DISABLE_STDIO != 1
+typedef struct dmc_unrar_file_reader_tag {
+	FILE *file;
+	uint64_t size;
+
+	bool need_close;
+} dmc_unrar_file_reader;
+
+static FILE *dmc_unrar_file_fopen(const char *path) {
+	return fopen(path, "rb");
+}
+
+static uint64_t dmc_unrar_file_get_size(FILE *file) {
+	long pos = ftell(file), size;
+
+	if (pos == -1)
+		return 0;
+
+	if (fseek(file, 0, SEEK_END) != 0)
+		return 0;
+
+	size = ftell(file);
+	if (size == -1)
+		return 0;
+
+	if (fseek(file, pos, SEEK_SET) != 0)
+		return 0;
+
+	return (uint64_t)size;
+}
+
+static dmc_unrar_return dmc_unrar_file_set(dmc_unrar_file_reader *reader, FILE *file) {
+	DMC_UNRAR_ASSERT(reader && file);
+
+	reader->file       = file;
+	reader->size       = dmc_unrar_file_get_size(file);
+	reader->need_close = false;
+
+	return DMC_UNRAR_OK;
+}
+
+static dmc_unrar_return dmc_unrar_file_open(dmc_unrar_file_reader *reader, const char *path) {
+	DMC_UNRAR_ASSERT(reader && path);
+
+	if (!(reader->file = dmc_unrar_file_fopen(path)))
+		return DMC_UNRAR_OPEN_FAIL;
+
+	reader->size       = dmc_unrar_file_get_size(reader->file);
+	reader->need_close = true;
+
+	return DMC_UNRAR_OK;
+}
+
+static void dmc_unrar_file_close(dmc_unrar_file_reader *reader) {
+	if (!reader)
+		return;
+
+	if (reader->need_close)
+		fclose(reader->file);
+
+	reader->file       = NULL;
+	reader->need_close = false;
+}
+
+static size_t dmc_unrar_file_read_func(void *opaque, void *buffer, size_t n) {
+	if (!opaque)
+		return 0;
+
+	{
+		dmc_unrar_file_reader *file = (dmc_unrar_file_reader *)opaque;
+
+		n = fread(buffer, 1, n, file->file);
+	}
+
+	return n;
+}
+
+static int dmc_unrar_file_seek_func(void *opaque, uint64_t offset) {
+	if (!opaque)
+		return -1;
+
+	{
+		dmc_unrar_file_reader *file = (dmc_unrar_file_reader *)opaque;
+
+		return fseek(file->file, offset, SEEK_SET);
+	}
+}
+
+static void dmc_unrar_io_init_file_reader(dmc_unrar_io *io, dmc_unrar_file_reader *file_reader) {
+	DMC_UNRAR_ASSERT(io && file_reader && file_reader->file);
+
+	io->func_read = &dmc_unrar_file_read_func;
+	io->func_seek = &dmc_unrar_file_seek_func;
+	io->opaque    = file_reader;
+}
+
+static bool dmc_unrar_io_is_file_reader(dmc_unrar_io *io) {
+	if (!io)
+		return false;
+
+	return io->opaque &&
+	       (io->func_read == &dmc_unrar_file_read_func) &&
+	       (io->func_seek == &dmc_unrar_file_seek_func);
+}
+#endif /* DMC_UNRAR_DISABLE_STDIO */
+/* '--- */
+
 /* .--- Convenience IO functions */
 static uint16_t dmc_unrar_get_uint16le(const uint8_t *data) {
 	return (((uint16_t)data[1]) << 8) |
@@ -1087,6 +1244,46 @@ bool dmc_unrar_is_rar_mem(const void *mem, size_t size) {
 	return dmc_unrar_is_rar(&io);
 }
 
+#if DMC_UNRAR_DISABLE_STDIO != 1
+bool dmc_unrar_is_rar_file(FILE *file) {
+	dmc_unrar_file_reader file_reader;
+	dmc_unrar_io io;
+	bool result;
+
+	if (!file)
+		return false;
+
+	if (dmc_unrar_file_set(&file_reader, file) != DMC_UNRAR_OK)
+		return false;
+
+	dmc_unrar_io_init_file_reader(&io, &file_reader);
+
+	result = dmc_unrar_is_rar(&io);
+
+	dmc_unrar_file_close(&file_reader);
+	return result;
+}
+
+bool dmc_unrar_is_rar_path(const char *path) {
+	dmc_unrar_file_reader file_reader;
+	dmc_unrar_io io;
+	bool result;
+
+	if (!path)
+		return false;
+
+	if (dmc_unrar_file_open(&file_reader, path) != DMC_UNRAR_OK)
+		return false;
+
+	dmc_unrar_io_init_file_reader(&io, &file_reader);
+
+	result = dmc_unrar_is_rar(&io);
+
+	dmc_unrar_file_close(&file_reader);
+	return result;
+}
+#endif /* DMC_UNRAR_DISABLE_STDIO */
+
 dmc_unrar_return dmc_unrar_archive_init(dmc_unrar_archive *archive) {
 	if (!archive)
 		return DMC_UNRAR_ARCHIVE_IS_NULL;
@@ -1194,6 +1391,85 @@ dmc_unrar_return dmc_unrar_archive_open_mem(dmc_unrar_archive *archive,
 	return DMC_UNRAR_OK;
 }
 
+#if DMC_UNRAR_DISABLE_STDIO != 1
+static dmc_unrar_return dmc_unrar_archive_open_file_reader(dmc_unrar_archive *archive,
+		dmc_unrar_file_reader *file) {
+
+	DMC_UNRAR_ASSERT(archive && file);
+
+	/* Initialize allocators. */
+	{
+		const dmc_unrar_return alloc_check = dmc_unrar_archive_check_alloc(&archive->alloc);
+		if (alloc_check != DMC_UNRAR_OK) {
+			return alloc_check;
+		}
+	}
+
+	/* Allocate and initialize a simple file reader. */
+	{
+		dmc_unrar_file_reader *file_reader = (dmc_unrar_file_reader *)
+			dmc_unrar_malloc(&archive->alloc, 1, sizeof(dmc_unrar_file_reader));
+
+		if (!file_reader) {
+			dmc_unrar_file_close(file);
+			return DMC_UNRAR_ALLOC_FAIL;
+		}
+
+		*file_reader = *file;
+		DMC_UNRAR_CLEAR_OBJ(*file);
+
+		dmc_unrar_io_init_file_reader(&archive->io, file_reader);
+
+		/* Pass to the generic open function. */
+		{
+			const dmc_unrar_return open_archive = dmc_unrar_archive_open(archive, file_reader->size);
+			if (open_archive != DMC_UNRAR_OK) {
+				dmc_unrar_archive_close(archive);
+				return open_archive;
+			}
+		}
+	}
+
+	return DMC_UNRAR_OK;
+}
+
+dmc_unrar_return dmc_unrar_archive_open_file(dmc_unrar_archive *archive, FILE *file) {
+	dmc_unrar_file_reader file_reader;
+
+	/* Sanity checks. */
+	if (!archive)
+		return DMC_UNRAR_ARCHIVE_IS_NULL;
+	if (!file)
+		return DMC_UNRAR_ARCHIVE_EMPTY;
+
+	{
+		dmc_unrar_return file_open = dmc_unrar_file_set(&file_reader, file);
+		if (file_open != DMC_UNRAR_OK)
+			return file_open;
+	}
+
+	return dmc_unrar_archive_open_file_reader(archive, &file_reader);
+}
+
+dmc_unrar_return dmc_unrar_archive_open_path(dmc_unrar_archive *archive, const char *path) {
+	dmc_unrar_file_reader file_reader;
+
+	/* Sanity checks. */
+	if (!archive)
+		return DMC_UNRAR_ARCHIVE_IS_NULL;
+	if (!path)
+		return DMC_UNRAR_ARCHIVE_EMPTY;
+
+	{
+		dmc_unrar_return file_open = dmc_unrar_file_open(&file_reader, path);
+		if (file_open != DMC_UNRAR_OK)
+			return file_open;
+	}
+
+	return dmc_unrar_archive_open_file_reader(archive, &file_reader);
+}
+#endif /* DMC_UNRAR_DISABLE_STDIO */
+
 void dmc_unrar_archive_close(dmc_unrar_archive *archive) {
 	if (!archive)
 		return;
@@ -1204,9 +1480,20 @@ void dmc_unrar_archive_close(dmc_unrar_archive *archive) {
 		return;
 	}
 
-	/* If we're using our own memory reader, we need to free its context. */
-	if (dmc_unrar_io_is_mem_reader(&archive->io))
+#if DMC_UNRAR_DISABLE_STDIO != 1
+	/* If we're using our own file reader, clean and free its context. */
+	if (dmc_unrar_io_is_file_reader(&archive->io)) {
+		dmc_unrar_file_close((dmc_unrar_file_reader *)archive->io.opaque);
 		dmc_unrar_free(&archive->alloc, archive->io.opaque);
+		DMC_UNRAR_CLEAR_OBJ(archive->io);
+	}
+#endif /* DMC_UNRAR_DISABLE_STDIO */
+
+	/* If we're using our own memory reader, clean and free its context. */
+	if (dmc_unrar_io_is_mem_reader(&archive->io)) {
+		dmc_unrar_free(&archive->alloc, archive->io.opaque);
+		DMC_UNRAR_CLEAR_OBJ(archive->io);
+	}
 
 	/* Deallocate the internal state. */
 	if (archive->internal_state) {
