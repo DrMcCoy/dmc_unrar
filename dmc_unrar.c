@@ -68,6 +68,8 @@
  * Someday, ????-??-?? (Version 1.4.0)
  * - Fixed compilation on older gcc
  * - Added support for archive and file comments
+ * - Changed file entry timestamp to always be POSIX time
+ *   (previously, it was MS-DOS for RAR4, POSIX for RAR5)
  *
  * Sunday, 2017-03-12 (Version 1.3.0)
  * - Fixed a segfault when opening an archive fails
@@ -378,9 +380,9 @@ typedef struct dmc_unrar_file_tag {
 
 	bool has_crc; /**< Does this file entry have a checksum? */
 
-	uint32_t crc;      /**< Checksum (CRC-32, 0xEDB88320 polynomial). */
-	uint32_t dos_time; /**< File creation timestamp, in MS-DOS format. */
-	uint64_t attrs;    /**< File attributes, host_os-specific. */
+	uint32_t crc;       /**< Checksum (CRC-32, 0xEDB88320 polynomial). */
+	uint64_t unix_time; /**< File modification timestamp, POSIX epoch format. */
+	uint64_t attrs;     /**< File attributes, host_os-specific. */
 
 } dmc_unrar_file;
 
@@ -595,10 +597,6 @@ dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_
  */
 dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size_t index,
 	void **buffer, size_t *uncompressed_size, bool validate_crc);
-
-/** Decode the given DOS date/time value into its component parts. */
-void dmc_unrar_decode_dos_time(uint32_t dos_time,
-	int *year, int *month, int *day, int *hour, int *minute, int *second);
 
 /** Return true if the given \0-terminated string contains valid UTF-8 data. */
 bool dmc_unrar_unicode_is_valid_utf8(const char *str);
@@ -2088,6 +2086,40 @@ static uint64_t dmc_unrar_rar4_get_dict_size(const dmc_unrar_file_block *file) {
 	return 0;
 }
 
+/** Explode a MS-DOS timestamp into its component parts. */
+static void dmc_unrar_decode_dos_time(uint32_t dos_time,
+		int *year, int *month, int *day, int *hour, int *minute, int *second) {
+
+	*year   = (dos_time >> 25)       + 1980;
+	*month  = (dos_time >> 21) & 15;
+	*day    = (dos_time >> 16) & 31;
+	*hour   = (dos_time >> 11) & 31;
+	*minute = (dos_time >>  5) & 63;
+	*second = (dos_time        & 31) *    2;
+}
+
+/** Create a POSIX timestamp from date and time. */
+static uint64_t dmc_unrar_time_to_unix_time(int year, int month, int day, int hour, int minute, int second) {
+	static const uint16_t days_to_month_start[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+	uint32_t years, leap_years;
+	uint64_t unix = 0;
+
+	if (year < 1970)
+		return 0;
+
+	years      = year - 1970;
+	leap_years = ((year - 1) - 1968) / 4 - ((year - 1) - 1900) / 100 + ((year - 1) - 1600) / 400;
+
+	unix += second + 60 * minute + 60 * 60 * hour;
+	unix += (days_to_month_start[month - 1] + day - 1) * 60 * 60 * 24;
+	unix += (years * 365 + leap_years) * 60 * 60 * 24;
+
+	if ((month > 2) && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
+		unix += 60 * 60 * 24;
+
+	return unix;
+}
+
 /** Read a RAR4 file entry. */
 static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archive,
 		dmc_unrar_block_header *block, dmc_unrar_file_block *file, bool modify_block) {
@@ -2122,11 +2154,19 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 	}
 
 	file->file.has_crc = true;
-
 	if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.crc))
 		return DMC_UNRAR_READ_FAIL;
-	if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.dos_time))
-		return DMC_UNRAR_READ_FAIL;
+
+	{
+		uint32_t dos_time;
+		int year, month, day, hour, minute, second;
+
+		if (!dmc_unrar_archive_read_uint32le(&archive->io, &dos_time))
+			return DMC_UNRAR_READ_FAIL;
+
+		dmc_unrar_decode_dos_time(dos_time, &year, &month, &day, &hour, &minute, &second);
+		file->file.unix_time = dmc_unrar_time_to_unix_time(year, month, day, hour, minute, second);
+	}
 
 	{
 		uint8_t version;
@@ -2340,10 +2380,15 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 		return DMC_UNRAR_READ_FAIL;
 
 	/* File timestamp. */
-	file->file.dos_time = 0;
-	if (file->flags & DMC_UNRAR_FLAG5_FILE_HASTIME)
-		if (!dmc_unrar_archive_read_uint32le(&archive->io, &file->file.dos_time))
-			return DMC_UNRAR_READ_FAIL;
+	{
+		uint32_t unix_time = 0;
+
+		if (file->flags & DMC_UNRAR_FLAG5_FILE_HASTIME)
+			if (!dmc_unrar_archive_read_uint32le(&archive->io, &unix_time))
+				return DMC_UNRAR_READ_FAIL;
+
+		file->file.unix_time = unix_time;
+	}
 
 	/* Checksum. */
 	file->file.has_crc = (file->flags & DMC_UNRAR_FLAG5_FILE_HASCRC) != 0;
@@ -3355,17 +3400,6 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t 
 	}
 
 	return DMC_UNRAR_OK;
-}
-
-void dmc_unrar_decode_dos_time(uint32_t dos_time,
-		int *year, int *month, int *day, int *hour, int *minute, int *second) {
-
-	*year   = (dos_time >> 25)       + 1980;
-	*month  = (dos_time >> 21) & 15;
-	*day    = (dos_time >> 16) & 31;
-	*hour   = (dos_time >> 11) & 31;
-	*minute = (dos_time >>  5) & 63;
-	*second = (dos_time        & 31) *    2;
 }
 
 /* .--- Extracting file entries */
