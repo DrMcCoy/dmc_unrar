@@ -931,17 +931,18 @@ struct dmc_unrar_internal_state_tag {
 
 /* .--- Default allocation functions using malloc/realloc/free */
 static void *dmc_unrar_def_alloc_func(void *opaque, size_t items, size_t size) {
-	(void)opaque, (void)items, (void)size;
+	(void)opaque; (void)items; (void)size;
+
 	return DMC_UNRAR_MALLOC(items * size);
 }
 
 static void *dmc_unrar_def_realloc_func(void *opaque, void *address, size_t items, size_t size) {
-	(void)opaque, (void)address, (void)items, (void)size;
+	(void)opaque; (void)address; (void)items; (void)size;
 	return DMC_UNRAR_REALLOC(address, items * size);
 }
 
 static void dmc_unrar_def_free_func(void *opaque, void *address) {
-	(void)opaque, (void)address;
+	(void)opaque; (void)address;
 	DMC_UNRAR_FREE(address);
 }
 /* '--- */
@@ -5556,7 +5557,7 @@ static dmc_unrar_return dmc_unrar_rar30_decode_ppmd(dmc_unrar_rar30_context *ctx
 
 	return DMC_UNRAR_OK;
 #else /* DMC_UNRAR_DISABLE_PPMD */
-	(void)ctx, (void)buffer, (void)buffer_offset, (void)buffer_size, (void)running_output_count;
+	(void)ctx; (void)buffer; (void)buffer_offset; (void)buffer_size; (void)running_output_count;
 	return DMC_UNRAR_30_DISABLED_FEATURE_PPMD;
 #endif /* DMC_UNRAR_DISABLE_PPMD */
 }
@@ -6358,7 +6359,7 @@ static uint32_t dmc_unrar_bs_be2host_32(uint32_t n) {
 }
 
 static uint64_t dmc_unrar_bs_be2host_64(uint64_t n) {
-	(void)&dmc_unrar_bs_is_little_endian, (void)&dmc_unrar_bs_swap_endian_uint64;
+	(void)&dmc_unrar_bs_is_little_endian; (void)&dmc_unrar_bs_swap_endian_uint64;
 
 #if defined(__linux__) && (DMC_UNRAR_DISABLE_BE32TOH_BE64TOH != 1)
 	return be64toh(n);
@@ -6460,7 +6461,7 @@ static bool dmc_unrar_bs_reload_cache(dmc_unrar_bs *bs) {
 
 	/* Fast path. Try just moving the next value in the L2 cache to the L1 cache.. */
 	if (dmc_unrar_bs_reload_l1_cache_from_l2(bs)) {
-		(void)&dmc_unrar_bs_be2host_32, (void)&dmc_unrar_bs_be2host_64;
+		(void)&dmc_unrar_bs_be2host_32; (void)&dmc_unrar_bs_be2host_64;
 
 		bs->cache = dmc_unrar_bs_be2host_cache_line(bs->cache);
 		bs->consumed_bits = 0;
