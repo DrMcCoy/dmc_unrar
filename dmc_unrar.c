@@ -33,9 +33,9 @@
  * - Solid archives (1.5, 2.0/2.6, 2.9/3.6, 5.0)
  * - SFX archives
  * - Validating extraction result against archive CRC-32
+ * - Archive and file comments
  *
  * Features we don't support (in rough order from easiest to difficult)
- * - Archive and file comments
  * - Detailed file attributes and permissions
  * - Large files (>= 2GB)
  * - Archives split over several volumes
@@ -65,8 +65,9 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version 1.3.1)
+ * Someday, ????-??-?? (Version 1.4.0)
  * - Fixed compilation on older gcc
+ * - Added support for archive and file comments
  *
  * Sunday, 2017-03-12 (Version 1.3.0)
  * - Fixed a segfault when opening an archive fails
@@ -493,13 +494,35 @@ dmc_unrar_return dmc_unrar_archive_open_path(dmc_unrar_archive *archive, const c
  *  All allocated memory will be freed. */
 void dmc_unrar_archive_close(dmc_unrar_archive *archive);
 
+/** Get the global archive comment of a RAR archive.
+ *
+ *  Note: we don't necessarily know the encoding of this data, nor is
+ *  the data always \0-terminated or even a human-readable string!
+ *
+ *  - RAR 5.0 always stores UTF-8 data.
+ *  - RAR 2.9/3.6 stores either ASCII or UTF-16LE data.
+ *    We don't know which is which.
+ *  - RAR 2.0/2.6 stores *anything*.
+ *  - RAR 1.5 doesn't support archive comments.
+ *
+ *  Use dmc_unrar_unicode_detect_encoding() to roughly detect the
+ *  encoding of a comment.
+ *
+ *  Use dmc_unrar_unicode_convert_utf16le_to_utf8() to convert a
+ *  UTF-16LE comment into UTF-8.
+ *
+ *  Returns the number of bytes written to comment. If comment is NULL, this function
+ *  returns the number of bytes needed to fully store the comment.
+ */
+size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, uint8_t *comment, size_t comment_size);
+
 /** Return the number of file entries in this RAR archive. */
 size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive);
 
 /** Return the detailed information about a file entry, or NULL on error. */
 const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index);
 
-/** Get the filename of a RAR file entry, UTF-8 encoded.
+/** Get the filename of a RAR file entry, UTF-8 encoded and \0-terminated.
  *
  *  Note: the filename is *not* checked to make sure it contains fully
  *  valid UTF-8 data. Use dmc_unrar_unicode_is_valid_utf8() and/or
@@ -514,11 +537,33 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 /** Is this file entry a directory? */
 bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index);
 
+/** Does this file entry have a comment attached? */
+bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, size_t index);
+
 /** Check if we support extracted this file entry.
  *
  *  If we do support extracting this file entry, DMC_UNRAR_OK is returned.
  *  Otherwise, the return code gives an idea why we don't have support. */
 dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t index);
+
+/** Get the comment of a file entry.
+ *
+ *  Note: we don't necessarily know the encoding of this data, nor is
+ *  the data always \0-terminated or even a human-readable string!
+ *
+ *  Only RAR 2.0/2.6 supports file comments.
+ *
+ *  Use dmc_unrar_unicode_detect_encoding() to roughly detect the
+ *  encoding of a comment.
+ *
+ *  Use dmc_unrar_unicode_convert_utf16le_to_utf8() to convert a
+ *  UTF-16LE comment into UTF-8.
+ *
+ *  Returns the number of bytes written to comment. If comment is NULL, this function
+ *  returns the number of bytes needed to fully store the comment.
+ */
+size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
+	uint8_t *comment, size_t comment_size);
 
 /** Extract a file entry into a pre-allocated memory buffer.
  *
@@ -564,6 +609,39 @@ bool dmc_unrar_unicode_is_valid_utf8(const char *str);
  *  @return True if the string was modified, false otherwise.
  */
 bool dmc_unrar_unicode_make_valid_utf8(char *str);
+
+typedef enum {
+	DMC_UNRAR_UNICODE_ENCODING_UTF8,
+	DMC_UNRAR_UNICODE_ENCODING_UTF16LE,
+
+	DMC_UNRAR_UNICODE_ENCODING_UNKNOWN
+
+} dmc_unrar_unicode_encoding;
+
+/** Try to detect the encoding of a memory region containing human-readable text.
+ *
+ *  This is of course far from 100% reliable. The detection is rather simplistic
+ *  and just meant to roughly detect the encoding of archive comments.
+ *
+ *  This function does not check for \0-termination.
+ */
+dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const uint8_t *data, size_t data_size);
+
+/** Convert UTF-16LE data into UTF-8.
+ *
+ *  Conversion will stop at the first invalid UTF-16 sequence. The result will
+ *  always be fully valid, \0-terminated UTF-8 string, but possibly cut off.
+ *
+ *  A leading UTF-16LE BOM will be removed.
+ *
+ *  @param utf16le_size Size of utf16le_data in bytes.
+ *  @param utf8_size Size of utf8_data in bytes.
+ *
+ *  Returns the number of bytes written to utf8_data. If utf8_data is NULL, this
+ *  function returns the number of bytes needed to fully store the UTF-8 string.
+ */
+size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const uint8_t *utf16le_data, size_t utf16le_size,
+	char *utf8_data, size_t utf8_size);
 
 /** Calculate a CRC-32 (0xEDB88320 polynomial) checksum from this memory region. */
 uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
@@ -865,6 +943,7 @@ enum {
 
 typedef struct dmc_unrar_block_header_tag {
 	uint64_t start_pos; /**< The offset within the file the block start at. */
+	uint64_t extra_pos; /**< The offset within the file the extra header data starts. */
 
 	uint64_t type; /**< The type of the block. */
 
@@ -916,6 +995,8 @@ struct dmc_unrar_internal_state_tag {
 	dmc_unrar_generation generation;
 
 	uint16_t archive_flags; /**< Global archive flags. */
+
+	dmc_unrar_block_header *comment; /**< Archive comments block. */
 
 	size_t block_count;             /**< Number of blocks in this RAR archive. */
 	dmc_unrar_block_header *blocks; /**< All blocks in this RAR archive. */
@@ -1769,11 +1850,14 @@ static bool dmc_unrar_grow_files(dmc_unrar_archive *archive) {
 /* '--- */
 
 /* .--- Reading RAR blocks and file headers */
-static dmc_unrar_return dmc_unrar_rar4_check_archive_flags(uint16_t flags);
 static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *archive,
 	dmc_unrar_block_header *block);
+static dmc_unrar_return dmc_unrar_rar4_read_archive_header(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block);
+static dmc_unrar_return dmc_unrar_rar4_read_archive_sub(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block);
 static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archive,
-	dmc_unrar_block_header *block, dmc_unrar_file_block *file);
+	dmc_unrar_block_header *block, dmc_unrar_file_block *file, bool modify_block);
 
 /** Connect the file entries in solid blocks together. */
 static void dmc_unrar_connect_solid(dmc_unrar_archive *archive) {
@@ -1826,13 +1910,18 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 			if (block->type == DMC_UNRAR_BLOCK4_TYPE_END)
 				break;
 
-			/* It's an archive information header, validate and remember the flags. */
+			/* It's an archive information header. */
 			if (block->type == DMC_UNRAR_BLOCK4_TYPE_ARCHIVEHEADER) {
-				const dmc_unrar_return check_flags = dmc_unrar_rar4_check_archive_flags(block->flags);
-				if (check_flags != DMC_UNRAR_OK)
-					return check_flags;
+				const dmc_unrar_return read_header = dmc_unrar_rar4_read_archive_header(archive, block);
+				if (read_header != DMC_UNRAR_OK)
+					return read_header;
+			}
 
-				state->archive_flags = block->flags;
+			/* Might contain an archive comment. */
+			if (block->type == DMC_UNRAR_BLOCK4_TYPE_NEWSUB) {
+				const dmc_unrar_return read_sub = dmc_unrar_rar4_read_archive_sub(archive, block);
+				if (read_sub != DMC_UNRAR_OK)
+					return read_sub;
 			}
 
 			/* It's a file. */
@@ -1844,7 +1933,7 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 				{
 					dmc_unrar_file_block *file = &state->files[state->file_count - 1];
 
-					const dmc_unrar_return read_file = dmc_unrar_rar4_read_file_header(archive, block, file);
+					const dmc_unrar_return read_file = dmc_unrar_rar4_read_file_header(archive, block, file, true);
 					if (read_file != DMC_UNRAR_OK)
 						return read_file;
 				}
@@ -1857,19 +1946,6 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 	}
 
 	dmc_unrar_connect_solid(archive);
-
-	return DMC_UNRAR_OK;
-}
-
-/** Check the RAR4 archive flags for unsupported features. */
-static dmc_unrar_return dmc_unrar_rar4_check_archive_flags(uint16_t flags) {
-	/* Archive split into several volumes. We don't support that. */
-	if (flags & DMC_UNRAR_FLAG4_ARCHIVE_VOLUMES)
-		return DMC_UNRAR_ARCHIVE_UNSUPPORTED_VOLUMES;
-
-	/* Complete archive is encrypted. We don't support that either. */
-	if (flags & DMC_UNRAR_FLAG4_ARCHIVE_ENCRYPTED)
-		return DMC_UNRAR_ARCHIVE_UNSUPPORTED_ENCRYPTED;
 
 	return DMC_UNRAR_OK;
 }
@@ -1918,12 +1994,103 @@ static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *arch
 		block->data_size = data_size;
 	}
 
+	block->extra_pos = archive->io.offset;
+
 	return DMC_UNRAR_OK;
+}
+
+static dmc_unrar_return dmc_unrar_rar4_check_archive_flags(uint16_t flags);
+
+static dmc_unrar_return dmc_unrar_rar4_read_archive_header(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block) {
+
+	const dmc_unrar_return check_flags = dmc_unrar_rar4_check_archive_flags(block->flags);
+	if (check_flags != DMC_UNRAR_OK)
+		return check_flags;
+
+	archive->internal_state->archive_flags = block->flags;
+
+	if (!dmc_unrar_archive_seek(&archive->io, archive->io.offset + 6))
+		return DMC_UNRAR_SEEK_FAIL;
+
+	if (block->flags & DMC_UNRAR_FLAG4_ARCHIVE_ENCRYPTVERSION)
+		if (!dmc_unrar_archive_seek(&archive->io, archive->io.offset + 1))
+			return DMC_UNRAR_SEEK_FAIL;
+
+	if (block->flags & DMC_UNRAR_FLAG4_ARCHIVE_HASCOMMENT)
+		archive->internal_state->comment = block;
+
+	return DMC_UNRAR_OK;
+}
+
+/** Check the RAR4 archive flags for unsupported features. */
+static dmc_unrar_return dmc_unrar_rar4_check_archive_flags(uint16_t flags) {
+	/* Archive split into several volumes. We don't support that. */
+	if (flags & DMC_UNRAR_FLAG4_ARCHIVE_VOLUMES)
+		return DMC_UNRAR_ARCHIVE_UNSUPPORTED_VOLUMES;
+
+	/* Complete archive is encrypted. We don't support that either. */
+	if (flags & DMC_UNRAR_FLAG4_ARCHIVE_ENCRYPTED)
+		return DMC_UNRAR_ARCHIVE_UNSUPPORTED_ENCRYPTED;
+
+	return DMC_UNRAR_OK;
+}
+
+static dmc_unrar_return dmc_unrar_rar4_read_archive_sub(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block) {
+
+	dmc_unrar_return return_code;
+	dmc_unrar_file_block sub_block;
+	char name[3];
+
+	return_code = dmc_unrar_rar4_read_file_header(archive, block, &sub_block, false);
+	if (return_code != DMC_UNRAR_OK)
+		return return_code;
+
+	if (sub_block.name_size != 3)
+		return DMC_UNRAR_OK;
+
+	if (!dmc_unrar_archive_seek(&archive->io, sub_block.name_offset))
+		return DMC_UNRAR_SEEK_FAIL;
+
+	if (!dmc_unrar_archive_read_checked(&archive->io, name, 3))
+		return DMC_UNRAR_READ_FAIL;
+
+	/* For "comment", I guess. */
+	if (strncmp(name, "CMT", 3))
+		return DMC_UNRAR_OK;
+
+	/* Yup, this seems to be a comment. Store it in our archive struct. */
+
+	archive->internal_state->comment = block;
+	return DMC_UNRAR_OK;
+}
+
+static uint64_t dmc_unrar_rar4_get_dict_size(const dmc_unrar_file_block *file) {
+	/* TODO: Check the window size flags? */
+
+	switch (file->version) {
+		case 15:
+			return 0x10000;
+
+		case 20:
+		case 26:
+			return 0x100000;
+
+		case 29:
+		case 36:
+			return 0x400000;
+
+		default:
+			break;
+	}
+
+	return 0;
 }
 
 /** Read a RAR4 file entry. */
 static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archive,
-		dmc_unrar_block_header *block, dmc_unrar_file_block *file) {
+		dmc_unrar_block_header *block, dmc_unrar_file_block *file, bool modify_block) {
 
 	DMC_UNRAR_ASSERT(archive && block && file);
 
@@ -2000,7 +2167,8 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 		file->file.compressed_size   += ((uint64_t)high_comp)   << 32;
 
 		/* This of course also modifies the block data size. */
-		block->data_size = file->file.compressed_size;
+		if (modify_block)
+			block->data_size = file->file.compressed_size;
 	}
 
 	/* The filename would be here now. Remember the offset. */
@@ -2023,20 +2191,7 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 
 	file->is_link = false;
 
-	/* TODO: Check the window size flags? */
-	file->dict_size = 0;
-	switch (file->version) {
-		case 15:
-			file->dict_size = 0x10000;
-
-		case 20:
-		case 26:
-			file->dict_size = 0x100000;
-
-		case 29:
-		case 36:
-			file->dict_size = 0x400000;
-	}
+	file->dict_size = dmc_unrar_rar4_get_dict_size(file);
 
 	file->is_split = (file->flags & DMC_UNRAR_FLAG4_FILE_SPLITBEFORE) ||
 	                 (file->flags & DMC_UNRAR_FLAG4_FILE_SPLITAFTER);
@@ -2069,6 +2224,8 @@ static dmc_unrar_return dmc_unrar_rar5_read_block_header(dmc_unrar_archive *arch
 	dmc_unrar_block_header *block);
 static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archive,
 	dmc_unrar_block_header *block, dmc_unrar_file_block *file);
+static dmc_unrar_return dmc_unrar_rar5_read_service_block(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block);
 
 /** Run through the archive and collect all blocks (and files) in a RAR5 archive. */
 static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive) {
@@ -2104,6 +2261,13 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 					if (read_file != DMC_UNRAR_OK)
 						return read_file;
 				}
+			}
+
+			/* "Service" block. Might be an archive comment. */
+			if (block->type == DMC_UNRAR_BLOCK5_TYPE_SERVICE) {
+				const dmc_unrar_return read_service = dmc_unrar_rar5_read_service_block(archive, block);
+				if (read_service != DMC_UNRAR_OK)
+					return read_service;
 			}
 
 			/* Seek past this block, so we can read the next one. */
@@ -2145,6 +2309,8 @@ static dmc_unrar_return dmc_unrar_rar5_read_block_header(dmc_unrar_archive *arch
 	if (block->flags & DMC_UNRAR_FLAG5_BLOCK_DATA)
 		if (!dmc_unrar_rar5_read_number(&archive->io, &block->data_size))
 			return DMC_UNRAR_READ_FAIL;
+
+	block->extra_pos = archive->io.offset;
 
 	return DMC_UNRAR_OK;
 }
@@ -2271,6 +2437,36 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 	file->is_split = (file->flags & DMC_UNRAR_FLAG5_FILE_SPLITBEFORE) ||
 	                 (file->flags & DMC_UNRAR_FLAG5_FILE_SPLITAFTER);
 
+	return DMC_UNRAR_OK;
+}
+
+static dmc_unrar_return dmc_unrar_rar5_read_service_block(dmc_unrar_archive *archive,
+	dmc_unrar_block_header *block) {
+
+	dmc_unrar_return return_code;
+	dmc_unrar_file_block service_block;
+	char name[3];
+
+	return_code = dmc_unrar_rar5_read_file_header(archive, block, &service_block);
+	if (return_code != DMC_UNRAR_OK)
+		return return_code;
+
+	if (service_block.name_size != 3)
+		return DMC_UNRAR_OK;
+
+	if (!dmc_unrar_archive_seek(&archive->io, service_block.name_offset))
+		return DMC_UNRAR_SEEK_FAIL;
+
+	if (!dmc_unrar_archive_read_checked(&archive->io, name, 3))
+		return DMC_UNRAR_READ_FAIL;
+
+	/* For "comment", I guess. */
+	if (strncmp(name, "CMT", 3))
+		return DMC_UNRAR_OK;
+
+	/* Yup, this seems to be a comment. Store it in our archive struct. */
+
+	archive->internal_state->comment = block;
 	return DMC_UNRAR_OK;
 }
 
@@ -2445,26 +2641,56 @@ static uint32_t dmc_unrar_unicode_combine_surrogates(uint16_t lead, uint16_t tra
 	return (lead << 10) + trail + DMC_UNRAR_UNICODE_SURROGATE_OFFSET;
 }
 
+typedef uint16_t (*dmc_unrar_unicode_read_uint16le_func)(const void *opaque);
+typedef const void *(*dmc_unrar_unicode_advance_uint16le)(const void *opaque);
+
+static uint16_t dmc_unrar_unicode_read_uint16le_from_uint16(const void *opaque) {
+	return *((const uint16_t *)opaque);
+}
+
+static const void *dmc_unrar_unicode_advance_uint16(const void *opaque) {
+	return (const void *)(((const uint16_t *)opaque) + 1);
+}
+
+static uint16_t dmc_unrar_unicode_read_uint16le_from_uint8(const void *opaque) {
+	return dmc_unrar_get_uint16le((const uint8_t *)opaque);
+}
+
+static const void *dmc_unrar_unicode_advance_uint8(const void *opaque) {
+	return (const void *)(((const uint8_t *)opaque) + 2);
+}
+
 /** Convert a whole UTF-16 string into UTF-8. */
-static bool dmc_unrar_unicode_utf16_to_utf8(const uint16_t *utf16_data, size_t utf16_size,
-	char *utf8_data, size_t utf8_size, size_t *out_size) {
+static bool dmc_unrar_unicode_utf16_to_utf8(const void *utf16_data, size_t utf16_size,
+	char *utf8_data, size_t utf8_size, size_t *out_size,
+	dmc_unrar_unicode_read_uint16le_func read_func,
+	dmc_unrar_unicode_advance_uint16le advance_func) {
 
 	size_t i;
 
 	if (out_size)
 		*out_size = 0;
 
-	for (i = 0; i < utf16_size; i++) {
-		uint32_t codepoint = utf16_data[i];
+	for (i = 0; i < utf16_size; i += 2, utf16_data = advance_func(utf16_data)) {
+		uint32_t codepoint = read_func(utf16_data);
 		size_t length;
 
 		if (dmc_unrar_unicode_utf16_is_lead_surrogate(codepoint)) {
+			uint16_t trail;
 
-			if (((i + 1) >= utf16_size) || !dmc_unrar_unicode_utf16_is_trail_surrogate(utf16_data[i + 1]))
+			if ((i + 2) >= utf16_size)
 				/* Unpaired leading surrogate => broken data. */
 				return false;
 
-			codepoint = dmc_unrar_unicode_combine_surrogates(codepoint, utf16_data[i + 1]);
+			utf16_data = advance_func(utf16_data);
+			i += 2;
+
+			trail = read_func(utf16_data);
+			if (!dmc_unrar_unicode_utf16_is_trail_surrogate(trail))
+				/* Unpaired leading surrogate => broken data. */
+				return false;
+
+			codepoint = dmc_unrar_unicode_combine_surrogates(codepoint, trail);
 
 		} else if (dmc_unrar_unicode_utf16_is_trail_surrogate(codepoint))
 			/* Unpaired trailing surrogate => broken data. */
@@ -2493,19 +2719,20 @@ static bool dmc_unrar_unicode_utf16_to_utf8(const uint16_t *utf16_data, size_t u
 	return true;
 }
 
-static const char *dmc_unrar_utf8_get_first_invalid(const char *str) {
-	while (*str) {
+static const char *dmc_unrar_utf8_get_first_invalid(const char *str, size_t size) {
+	while ((size > 0) && *str) {
 		uint32_t codepoint;
 		const size_t length = dmc_unrar_unicode_utf8_get((const uint8_t *)str, &codepoint);
 
-		if (!length)
+		if (!length || (length > size))
 			return str;
 
 		if (!dmc_unrar_unicode_utf32_is_valid   (codepoint) ||
 		     dmc_unrar_unicode_utf32_is_overlong(codepoint, length))
 			return str;
 
-		str += length;
+		str  += length;
+		size -= length;
 	}
 
 	return NULL;
@@ -2515,7 +2742,7 @@ bool dmc_unrar_unicode_is_valid_utf8(const char *str) {
 	if (!str)
 		return false;
 
-	return dmc_unrar_utf8_get_first_invalid(str) == NULL;
+	return dmc_unrar_utf8_get_first_invalid(str, SIZE_MAX) == NULL;
 }
 
 bool dmc_unrar_unicode_make_valid_utf8(char *str) {
@@ -2523,7 +2750,7 @@ bool dmc_unrar_unicode_make_valid_utf8(char *str) {
 		return false;
 
 	{
-		char *first_invalid = (char *)dmc_unrar_utf8_get_first_invalid(str);
+		char *first_invalid = (char *)dmc_unrar_utf8_get_first_invalid(str, SIZE_MAX);
 		if (!first_invalid)
 			return false;
 
@@ -2532,6 +2759,67 @@ bool dmc_unrar_unicode_make_valid_utf8(char *str) {
 
 	return true;;
 }
+
+dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const uint8_t *data, size_t data_size) {
+	bool has_null = false;
+	size_t i;
+
+	if (!data || !data_size)
+		return DMC_UNRAR_UNICODE_ENCODING_UNKNOWN;
+
+	/* BOM. */
+	if ((data_size >= 2) && ((data_size % 1) == 0))
+		if ((data[0] == 0xFF) && (data[1] == 0xFE))
+			return DMC_UNRAR_UNICODE_ENCODING_UTF16LE;
+
+	i = 0;
+	while (i < data_size)
+		if (!data[i++])
+			break;
+
+	has_null = i < (data_size - 1);
+
+	if (!has_null)
+		if (dmc_unrar_utf8_get_first_invalid((const char *)data, data_size) == NULL)
+			return DMC_UNRAR_UNICODE_ENCODING_UTF8;
+
+	if (dmc_unrar_unicode_utf16_to_utf8(data, data_size, NULL, SIZE_MAX, NULL,
+	    &dmc_unrar_unicode_read_uint16le_from_uint8, &dmc_unrar_unicode_advance_uint8))
+		return DMC_UNRAR_UNICODE_ENCODING_UTF16LE;
+
+	return DMC_UNRAR_UNICODE_ENCODING_UNKNOWN;
+}
+
+size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const uint8_t *utf16le_data, size_t utf16le_size,
+	char *utf8_data, size_t utf8_size) {
+
+	if (!utf16le_data || !utf16le_size)
+		return 0;
+
+	/* Remove the BOM. */
+	if ((utf16le_size >= 2) && ((utf16le_size % 1) == 0)) {
+		if ((utf16le_data[0] == 0xFF) && (utf16le_data[1] == 0xFE)) {
+			utf16le_data += 2;
+			utf16le_size -= 2;
+		}
+	}
+
+	if (!utf8_data) {
+		if (!dmc_unrar_unicode_utf16_to_utf8(utf16le_data, utf16le_size, NULL, SIZE_MAX, &utf8_size,
+		    &dmc_unrar_unicode_read_uint16le_from_uint8, &dmc_unrar_unicode_advance_uint8))
+			return 0;
+
+		return utf8_size + 1;
+	}
+
+	if (!dmc_unrar_unicode_utf16_to_utf8(utf16le_data, utf16le_size, utf8_data, utf8_size - 1, &utf8_size,
+	    &dmc_unrar_unicode_read_uint16le_from_uint8, &dmc_unrar_unicode_advance_uint8))
+		return 0;
+
+	utf8_data[utf8_size] = '\0';
+	return utf8_size + 1;
+}
+
 /* '--- */
 
 /* .--- Information about files in RAR archives */
@@ -2542,13 +2830,22 @@ size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive) {
 	return archive->internal_state->file_count;
 }
 
-const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index) {
+static dmc_unrar_file_block *dmc_unrar_get_file(dmc_unrar_archive *archive, size_t index) {
 	if (!archive || !archive->internal_state)
 		return NULL;
+
 	if (!archive->internal_state->files || (index >= archive->internal_state->file_count))
 		return NULL;
 
-	return &archive->internal_state->files[index].file;
+	return &archive->internal_state->files[index];
+}
+
+const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index) {
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
+	if (!file)
+		return NULL;
+
+	return &file->file;
 }
 
 #define DMC_UNRAR_FILENAME_MAX_LENGTH 512
@@ -2661,14 +2958,13 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 }
 
 static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t index) {
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	size_t name_size;
 
-	if (!archive || !archive->internal_state)
-		return 0;
-	if (!archive->internal_state->files || (index >= archive->internal_state->file_count))
+	if (!file)
 		return 0;
 
-	name_size = archive->internal_state->files[index].name_size;
+	name_size = file->name_size;
 
 	/* RAR5 should always store the name in UTF-8. */
 	if (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR5)
@@ -2677,7 +2973,7 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 	DMC_UNRAR_ASSERT(archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4);
 
 	/* ASCII name. We can just pass through the size from the file block. */
-	if (!(archive->internal_state->files[index].flags & DMC_UNRAR_FLAG4_FILE_NAMEUNICODE))
+	if (!(file->flags & DMC_UNRAR_FLAG4_FILE_NAMEUNICODE))
 		return name_size + 1;
 
 	/* Unicode name. We actually need to read the name from file now. */
@@ -2688,7 +2984,7 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 		if (name_size > DMC_UNRAR_FILENAME_MAX_LENGTH)
 			return 0;
 
-		if (!dmc_unrar_archive_seek(&archive->io, archive->internal_state->files[index].name_offset))
+		if (!dmc_unrar_archive_seek(&archive->io, file->name_offset))
 			return 0;
 
 		if (!dmc_unrar_archive_read_checked(&archive->io, name, name_size))
@@ -2703,7 +2999,8 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 				return name_size + 1;
 
 			/* The name is UTF-16 encoded. Convert to UTF-8 to figure out the length. */
-			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length, NULL, SIZE_MAX, &name_size))
+			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length * 2, NULL, SIZE_MAX, &name_size,
+			     &dmc_unrar_unicode_read_uint16le_from_uint16, &dmc_unrar_unicode_advance_uint16))
 				return 0;
 		}
 	}
@@ -2714,26 +3011,23 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 		char *filename, size_t filename_size) {
 
-	/* TODO: We don't actually validate that the name read is valid UTF-8 data. */
-
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	size_t name_size;
 
-	if (!archive || !archive->internal_state)
-		return 0;
-	if (!archive->internal_state->files || (index >= archive->internal_state->file_count))
+	if (!file)
 		return 0;
 
 	/* If filename is NULL, return the number of bytes in the complete name. */
 	if (!filename)
 		return dmc_unrar_get_filename_length(archive, index);
 
-	if (!dmc_unrar_archive_seek(&archive->io, archive->internal_state->files[index].name_offset))
+	if (!dmc_unrar_archive_seek(&archive->io, file->name_offset))
 		return 0;
 
-	name_size = archive->internal_state->files[index].name_size;
+	name_size = file->name_size;
 
 	if ((archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4) &&
-	    (archive->internal_state->files[index].flags & DMC_UNRAR_FLAG4_FILE_NAMEUNICODE)) {
+	    (file->flags & DMC_UNRAR_FLAG4_FILE_NAMEUNICODE)) {
 
 		/* RAR4 Unicode name. */
 
@@ -2751,8 +3045,9 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 		if (dmc_unrar_get_filename_utf16(name_unicode, name_size, name_utf16, &utf16_length)) {
 			/* UTF-16 encoded. */
 
-			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length,
-			     filename, filename_size - 1, &filename_size))
+			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length * 2,
+			     filename, filename_size - 1, &filename_size,
+			     &dmc_unrar_unicode_read_uint16le_from_uint16, &dmc_unrar_unicode_advance_uint16))
 				return 0;
 
 		} else {
@@ -2785,38 +3080,218 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 	return filename_size + 1;
 }
 
-bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index) {
+static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
+	uint8_t *buffer, size_t buffer_size, size_t *uncompressed_size);
+
+static bool dmc_unrar_20_read_comment_file_at_position(dmc_unrar_archive *archive,
+		dmc_unrar_file_block *file) {
+
+	uint8_t version, method;
+	uint16_t uncompressed_size;
+	dmc_unrar_block_header comment_block;
+
+	if (dmc_unrar_rar4_read_block_header(archive, &comment_block) != DMC_UNRAR_OK)
+		return false;
+
+	if (comment_block.type != DMC_UNRAR_BLOCK4_TYPE_COMMENT)
+		return false;
+
+	if (!dmc_unrar_archive_read_uint16le(&archive->io, &uncompressed_size))
+		return false;
+	if (!dmc_unrar_archive_read_uint8(&archive->io, &version))
+		return false;
+	if (!dmc_unrar_archive_read_uint8(&archive->io, &method))
+		return false;
+
+	file->start_pos = archive->io.offset + 2;
+
+	file->file.compressed_size   = comment_block.header_size - 13;
+	file->file.uncompressed_size = uncompressed_size;
+
+	file->version = version;
+	file->method  = method;
+
+	file->dict_size = dmc_unrar_rar4_get_dict_size(file);
+
+	return true;
+}
+
+static bool dmc_unrar_20_read_comment_file(dmc_unrar_archive *archive, dmc_unrar_block_header *block,
+		dmc_unrar_file_block *file) {
+
+	/* 2.0/2.6 comments aren't really normal files. We hack one together anyways. */
+
+	if (!dmc_unrar_archive_seek(&archive->io, block->extra_pos))
+		return false;
+
+	if (!dmc_unrar_archive_seek(&archive->io, archive->io.offset + 6))
+		return false;
+
+	if (block->flags & DMC_UNRAR_FLAG4_ARCHIVE_ENCRYPTVERSION)
+		if (!dmc_unrar_archive_seek(&archive->io, archive->io.offset + 1))
+			return DMC_UNRAR_SEEK_FAIL;
+
+	return dmc_unrar_20_read_comment_file_at_position(archive, file);
+}
+
+static bool dmc_unrar_30_read_comment_file(dmc_unrar_archive *archive, dmc_unrar_block_header *block,
+		dmc_unrar_file_block *file) {
+
+	/* 2.9/3.6 comments are normal files with a name "CMT" in a sub block. */
+
+	if (!dmc_unrar_archive_seek(&archive->io, block->extra_pos))
+		return false;
+
+	if (dmc_unrar_rar4_read_file_header(archive, block, file, false) != DMC_UNRAR_OK)
+		return false;
+
+	return true;
+}
+
+static bool dmc_unrar_50_read_comment_file(dmc_unrar_archive *archive, dmc_unrar_block_header *block,
+		dmc_unrar_file_block *file) {
+
+	/* 5.0 comments are normal files with a name "CMT" in a service block. */
+
+	if (!dmc_unrar_archive_seek(&archive->io, block->extra_pos))
+		return false;
+
+	if (dmc_unrar_rar5_read_file_header(archive, block, file) != DMC_UNRAR_OK)
+		return false;
+
+	return true;
+}
+
+size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, uint8_t *comment, size_t comment_size) {
+	dmc_unrar_block_header *block;
+	dmc_unrar_file_block comment_file;
+
 	if (!archive || !archive->internal_state)
-		return false;
+		return 0;
 
-	if (!archive->internal_state->files || (index >= archive->internal_state->file_count))
-		return false;
+	block = archive->internal_state->comment;
 
-	{
-		dmc_unrar_file_block *file = &archive->internal_state->files[index];
+	/* No comment, no dice. */
+	if (!block)
+		return 0;
 
-		/* RAR5 has a simple flag in the file entry. */
-		if (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR5)
-			return file->flags & DMC_UNRAR_FLAG5_FILE_ISDIRECTORY;
+	DMC_UNRAR_CLEAR_OBJ(comment_file);
 
-		DMC_UNRAR_ASSERT(archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4);
+	if (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4) {
 
-		/* All bits in the sliding window size set means it's a directory. */
-		if ((file->flags & DMC_UNRAR_FLAG4_FILE_WINDOWMASK) == DMC_UNRAR_FLAG4_FILE_WINDOWDIR)
-			return true;
+		if (block->type == DMC_UNRAR_BLOCK4_TYPE_ARCHIVEHEADER) {
+			/* RAR 2.0/2.6 style: within the archive header block. */
 
-		/* Version 1.5 set the name in the DOS attribute flags. */
+			if (!dmc_unrar_20_read_comment_file(archive, block, &comment_file))
+				return 0;
 
-		if ((file->version == 15) && (file->file.host_os == DMC_UNRAR_HOSTOS_DOS) &&
-		    (file->file.attrs & DMC_UNRAR_ATTRIB_DOS_DIRECTORY))
-			return true;
+		} else if (block->type == DMC_UNRAR_BLOCK4_TYPE_NEWSUB) {
+			/* RAR 2.9/3.6 style: within a sub block. */
 
-		if ((file->version == 15) && (file->file.host_os == DMC_UNRAR_HOSTOS_WIN32) &&
-		    (file->file.attrs & DMC_UNRAR_ATTRIB_DOS_DIRECTORY))
-			return true;
+			if (!dmc_unrar_30_read_comment_file(archive, block, &comment_file))
+				return 0;
+
+		}
+
+	} else if (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR5) {
+		/* RAR 5.0 style: within a service block. */
+
+		if (block->type == DMC_UNRAR_BLOCK5_TYPE_SERVICE) {
+
+			if (!dmc_unrar_50_read_comment_file(archive, block, &comment_file))
+				return 0;
+		}
+
 	}
 
+	/* No comment. */
+	if (comment_file.file.uncompressed_size == 0)
+		return 0;
+
+	/* If comment is NULL, return the number of bytes in the complete comment. */
+	if (!comment)
+		return comment_file.file.uncompressed_size;
+
+	comment_size = DMC_UNRAR_MIN(comment_size, comment_file.file.uncompressed_size);
+	if (comment_size == 0)
+		return 0;
+
+	if (dmc_unrar_file_extract(archive, &comment_file, comment, comment_size, &comment_size) != DMC_UNRAR_OK)
+		return 0;
+
+	return comment_size;
+}
+
+size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
+	uint8_t *comment, size_t comment_size) {
+
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
+	dmc_unrar_file_block comment_file;
+
+	if (!file)
+		return 0;
+
+	if ((archive->internal_state->generation != DMC_UNRAR_GENERATION_RAR4) ||
+	   (!(file->flags & DMC_UNRAR_FLAG4_FILE_HASCOMMENT)))
+		return 0;
+
+	if (!dmc_unrar_archive_seek(&archive->io, file->name_offset + file->name_size))
+		return 0;
+
+	DMC_UNRAR_CLEAR_OBJ(comment_file);
+
+	if (!dmc_unrar_20_read_comment_file_at_position(archive, &comment_file))
+		return 0;
+
+	/* If comment is NULL, return the number of bytes in the complete comment. */
+	if (!comment)
+		return comment_file.file.uncompressed_size;
+
+	comment_size = DMC_UNRAR_MIN(comment_size, comment_file.file.uncompressed_size);
+	if (comment_size == 0)
+		return 0;
+
+	if (dmc_unrar_file_extract(archive, &comment_file, comment, comment_size, &comment_size) != DMC_UNRAR_OK)
+		return 0;
+
+	return comment_size;
+}
+
+bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index) {
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
+	if (!file)
+		return false;
+
+	/* RAR5 has a simple flag in the file entry. */
+	if (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR5)
+		return file->flags & DMC_UNRAR_FLAG5_FILE_ISDIRECTORY;
+
+	DMC_UNRAR_ASSERT(archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4);
+
+	/* All bits in the sliding window size set means it's a directory. */
+	if ((file->flags & DMC_UNRAR_FLAG4_FILE_WINDOWMASK) == DMC_UNRAR_FLAG4_FILE_WINDOWDIR)
+		return true;
+
+	/* Version 1.5 set the name in the DOS attribute flags. */
+
+	if ((file->version == 15) && (file->file.host_os == DMC_UNRAR_HOSTOS_DOS) &&
+			(file->file.attrs & DMC_UNRAR_ATTRIB_DOS_DIRECTORY))
+		return true;
+
+	if ((file->version == 15) && (file->file.host_os == DMC_UNRAR_HOSTOS_WIN32) &&
+			(file->file.attrs & DMC_UNRAR_ATTRIB_DOS_DIRECTORY))
+		return true;
+
 	return false;
+}
+
+bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, size_t index) {
+	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
+	if (!file)
+		return false;
+
+	return (archive->internal_state->generation == DMC_UNRAR_GENERATION_RAR4) &&
+	       (file->flags & DMC_UNRAR_FLAG4_FILE_HASCOMMENT);
 }
 
 dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t index) {
