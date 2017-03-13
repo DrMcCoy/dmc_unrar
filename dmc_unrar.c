@@ -6314,6 +6314,7 @@ static bool dmc_unrar_bs_is_little_endian(void) {
 	return (*(char*)&n) == 1;
 }
 
+#if DMC_UNRAR_32BIT == 1
 static uint32_t dmc_unrar_bs_swap_endian_uint32(uint32_t n) {
 #ifdef _MSC_VER
 	return _byteswap_ulong(n);
@@ -6327,6 +6328,24 @@ static uint32_t dmc_unrar_bs_swap_endian_uint32(uint32_t n) {
 #endif
 }
 
+static uint32_t dmc_unrar_bs_be2host_32(uint32_t n) {
+	(void)&dmc_unrar_bs_is_little_endian; (void)&dmc_unrar_bs_swap_endian_uint32;
+
+#if defined(__linux__) && (DMC_UNRAR_DISABLE_BE32TOH_BE64TOH != 1)
+	return be32toh(n);
+#else
+	if (dmc_unrar_bs_is_little_endian()) {
+		return dmc_unrar_bs_swap_endian_uint32(n);
+	}
+
+	return n;
+#endif
+}
+
+#define dmc_unrar_bs_be2host_cache_line dmc_unrar_bs_be2host_32
+#endif /* DMC_UNRAR_32BIT */
+
+#if DMC_UNRAR_64BIT == 1
 static uint64_t dmc_unrar_bs_swap_endian_uint64(uint64_t n) {
 #ifdef _MSC_VER
 	return _byteswap_uint64(n);
@@ -6344,20 +6363,6 @@ static uint64_t dmc_unrar_bs_swap_endian_uint64(uint64_t n) {
 #endif
 }
 
-static uint32_t dmc_unrar_bs_be2host_32(uint32_t n) {
-	(void)&dmc_unrar_bs_is_little_endian, (void)&dmc_unrar_bs_swap_endian_uint32;
-
-#if defined(__linux__) && (DMC_UNRAR_DISABLE_BE32TOH_BE64TOH != 1)
-	return be32toh(n);
-#else
-	if (dmc_unrar_bs_is_little_endian()) {
-		return dmc_unrar_bs_swap_endian_uint32(n);
-	}
-
-	return n;
-#endif
-}
-
 static uint64_t dmc_unrar_bs_be2host_64(uint64_t n) {
 	(void)&dmc_unrar_bs_is_little_endian; (void)&dmc_unrar_bs_swap_endian_uint64;
 
@@ -6372,11 +6377,8 @@ static uint64_t dmc_unrar_bs_be2host_64(uint64_t n) {
 #endif
 }
 
-#if DMC_UNRAR_64BIT == 1
-	#define dmc_unrar_bs_be2host_cache_line dmc_unrar_bs_be2host_64
-#else
-	#define dmc_unrar_bs_be2host_cache_line dmc_unrar_bs_be2host_32
-#endif
+#define dmc_unrar_bs_be2host_cache_line dmc_unrar_bs_be2host_64
+#endif /* DMC_UNRAR_64BIT */
 
 static bool dmc_unrar_bs_init_from_io(dmc_unrar_bs *bs, dmc_unrar_io *io, uint64_t size) {
 	if (!bs || !io || !io->func_read || !io->func_seek)
@@ -6461,8 +6463,6 @@ static bool dmc_unrar_bs_reload_cache(dmc_unrar_bs *bs) {
 
 	/* Fast path. Try just moving the next value in the L2 cache to the L1 cache.. */
 	if (dmc_unrar_bs_reload_l1_cache_from_l2(bs)) {
-		(void)&dmc_unrar_bs_be2host_32; (void)&dmc_unrar_bs_be2host_64;
-
 		bs->cache = dmc_unrar_bs_be2host_cache_line(bs->cache);
 		bs->consumed_bits = 0;
 		return true;
