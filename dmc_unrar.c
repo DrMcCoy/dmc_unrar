@@ -65,7 +65,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version 1.4.0)
+ * Monday, 2017-03-13 (Version 1.4.0)
  * - Fixed compilation on older gcc
  * - Added support for archive and file comments
  * - Changed file entry timestamp to always be POSIX time
