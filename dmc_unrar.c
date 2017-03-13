@@ -2566,7 +2566,7 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 	size_t utf16_data_begin = 0, utf16_data_length = 0, i;
 
 	uint16_t high_byte;
-	int flag_byte, flag_bits = 0;
+	int flag_byte = 0, flag_bits = 0;
 
 	*name_utf16_length = 0;
 
@@ -2899,7 +2899,7 @@ static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_u
 dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_t index,
 		void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc) {
 
-	size_t output_size;
+	size_t output_size = 0;
 
 	if (!buffer)
 		return DMC_UNRAR_ARCHIVE_EMPTY;
