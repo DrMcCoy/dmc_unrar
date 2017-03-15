@@ -36,7 +36,7 @@
  * - Archive and file comments
  *
  * Features we don't support (in rough order from easiest to difficult)
- * - Detailed file attributes and permissions
+ * - Unix owner/group info, NTFS permissions
  * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
@@ -64,6 +64,9 @@
  */
 
 /* Version history:
+ *
+ * Someday, ????-??-?? (Version 1.5.0)
+ * - Documented file attributes for DOS/Windows and Unix
  *
  * Monday, 2017-03-13 (Version 1.4.0)
  * - Fixed compilation on older gcc
@@ -346,7 +349,7 @@ typedef enum {
 } dmc_unrar_host_os;
 
 /** DOS/Windows file attributes. */
-enum {
+typedef enum {
 	DMC_UNRAR_ATTRIB_DOS_READONLY    = 0x00001,
 	DMC_UNRAR_ATTRIB_DOS_HIDDEN      = 0x00002,
 	DMC_UNRAR_ATTRIB_DOS_SYSTEM      = 0x00004,
@@ -365,7 +368,43 @@ enum {
 	DMC_UNRAR_ATTRIB_DOS_INTEGRITY   = 0x08000,
 	DMC_UNRAR_ATTRIB_DOS_VIRTUAL     = 0x10000,
 	DMC_UNRAR_ATTRIB_DOS_NOSCRUB     = 0x20000
-};
+} dmc_unrar_windows_attribute;
+
+/** Unix file attributes. */
+typedef enum {
+	/* Mask to check for the types of a file. */
+	DMC_UNRAR_ATTRIB_UNIX_FILETYPE_MASK       = 0170000,
+	/* Mask to check for the permissions of a file. */
+	DMC_UNRAR_ATTRIB_UNIX_PERMISSIONS_MASK    = 0007777,
+
+	/* .--- File types. Mutually exclusive. */
+	DMC_UNRAR_ATTRIB_UNIX_IS_SYMBOLIC_LINK    = 0120000,
+	DMC_UNRAR_ATTRIB_UNIX_IS_SOCKET           = 0140000,
+
+	DMC_UNRAR_ATTRIB_UNIX_IS_REGULAR_FILE     = 0100000,
+
+	DMC_UNRAR_ATTRIB_UNIX_IS_BLOCK_DEVICE     = 0060000,
+	DMC_UNRAR_ATTRIB_UNIX_IS_DIRECTORY        = 0040000,
+	DMC_UNRAR_ATTRIB_UNIX_IS_CHARACTER_DEVICE = 0020000,
+	DMC_UNRAR_ATTRIB_UNIX_IS_FIFO             = 0010000,
+	/* '--- */
+
+	/* .--- File permissions. OR-able. */
+	DMC_UNRAR_ATTRIB_UNIX_SET_USER_ID         = 0004000,
+	DMC_UNRAR_ATTRIB_UNIX_SET_GROUP_ID        = 0002000,
+	DMC_UNRAR_ATTRIB_UNIX_STICKY              = 0001000,
+
+	DMC_UNRAR_ATTRIB_UNIX_USER_READ           = 0000400,
+	DMC_UNRAR_ATTRIB_UNIX_USER_WRITE          = 0000200,
+	DMC_UNRAR_ATTRIB_UNIX_USER_EXECUTE        = 0000100,
+	DMC_UNRAR_ATTRIB_UNIX_GROUP_READ          = 0000040,
+	DMC_UNRAR_ATTRIB_UNIX_GROUP_WRITE         = 0000020,
+	DMC_UNRAR_ATTRIB_UNIX_GROUP_EXECUTE       = 0000010,
+	DMC_UNRAR_ATTRIB_UNIX_OTHER_READ          = 0000004,
+	DMC_UNRAR_ATTRIB_UNIX_OTHER_WRITE         = 0000002,
+	DMC_UNRAR_ATTRIB_UNIX_OTHER_EXECUTE       = 0000001
+	/* '--- */
+} dmc_unrar_unix_attribute;
 
 struct dmc_unrar_internal_state_tag;
 typedef struct dmc_unrar_internal_state_tag dmc_unrar_internal_state;
@@ -382,7 +421,18 @@ typedef struct dmc_unrar_file_tag {
 
 	uint32_t crc;       /**< Checksum (CRC-32, 0xEDB88320 polynomial). */
 	uint64_t unix_time; /**< File modification timestamp, POSIX epoch format. */
-	uint64_t attrs;     /**< File attributes, host_os-specific. */
+
+	/** File attributes, operating-system-specific.
+	 *
+	 *  The meaning depends on the host_os value:
+	 *  - DMC_UNRAR_HOSTOS_DOS:   see dmc_unrar_windows_attribute
+	 *  - DMC_UNRAR_HOSTOS_OS2:   ???
+	 *  - DMC_UNRAR_HOSTOS_WIN32: see dmc_unrar_windows_attribute
+	 *  - DMC_UNRAR_HOSTOS_UNIX:  see dmc_unrar_unix_attribute
+	 *  - DMC_UNRAR_HOSTOS_MACOS: ???
+	 *  - DMC_UNRAR_HOSTOS_BEOS:  ???
+	 */
+	uint64_t attrs;
 
 } dmc_unrar_file;
 
