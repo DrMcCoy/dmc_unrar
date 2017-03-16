@@ -37,6 +37,7 @@
  *
  * Features we don't support (in rough order from easiest to difficult)
  * - Unix owner/group info, NTFS permissions
+ * - Symbolic links and hard links
  * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
@@ -67,6 +68,7 @@
  *
  * Someday, ????-??-?? (Version 1.5.0)
  * - Documented file attributes for DOS/Windows and Unix
+ * - Added more accurate detection of symbolic links
  *
  * Monday, 2017-03-13 (Version 1.4.0)
  * - Fixed compilation on older gcc
@@ -2170,6 +2172,16 @@ static uint64_t dmc_unrar_time_to_unix_time(int year, int month, int day, int ho
 	return unix;
 }
 
+static bool dmc_unrar_rar_file_is_link(dmc_unrar_file_block *file) {
+	if ((file->file.host_os == DMC_UNRAR_HOSTOS_DOS) || (file->file.host_os == DMC_UNRAR_HOSTOS_WIN32))
+		return (file->file.attrs & DMC_UNRAR_ATTRIB_DOS_SYMLINK) != 0;
+
+	if (file->file.host_os == DMC_UNRAR_HOSTOS_UNIX)
+		return (file->file.attrs & DMC_UNRAR_ATTRIB_UNIX_FILETYPE_MASK) == DMC_UNRAR_ATTRIB_UNIX_IS_SYMBOLIC_LINK;
+
+	return false;
+}
+
 /** Read a RAR4 file entry. */
 static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archive,
 		dmc_unrar_block_header *block, dmc_unrar_file_block *file, bool modify_block) {
@@ -2279,7 +2291,7 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 	file->solid_next  = NULL;
 	file->solid_start = NULL;
 
-	file->is_link = false;
+	file->is_link = dmc_unrar_rar_file_is_link(file);
 
 	file->dict_size = dmc_unrar_rar4_get_dict_size(file);
 
@@ -2497,7 +2509,7 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 	file->name_offset = archive->io.offset;
 
 	file->is_encrypted = false;
-	file->is_link      = false;
+	file->is_link = dmc_unrar_rar_file_is_link(file);
 
 	if (block->extra_size) {
 		const uint64_t extra_end = block->start_pos + block->header_size;
@@ -3426,11 +3438,6 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t 
 		if (file->file.uncompressed_size >= 0x7FFFFFFF)
 			return DMC_UNRAR_FILE_UNSUPPORTED_LARGE;
 
-		/* Uncompressed file, but uncompressed size differs from the compressed size?!?. */
-		if ((file->method == DMC_UNRAR_METHOD_STORE) &&
-		    (file->file.uncompressed_size != file->file.compressed_size))
-			return DMC_UNRAR_INVALID_DATA;
-
 		/* We don't support split files. */
 		if (file->is_split)
 			return DMC_UNRAR_FILE_UNSUPPORTED_SPLIT;
@@ -3447,6 +3454,13 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t 
 		/* We don't support encrypted files. */
 		if (file->is_encrypted)
 			return DMC_UNRAR_FILE_UNSUPPORTED_ENCRYPTED;
+
+		/* Uncompressed file, but uncompressed size differs from the compressed size?!?
+		   Used by symbolic links in RAR5, but we catch that above. */
+		if ((file->method == DMC_UNRAR_METHOD_STORE) &&
+		    (file->file.uncompressed_size != file->file.compressed_size))
+			return DMC_UNRAR_INVALID_DATA;
+
 	}
 
 	return DMC_UNRAR_OK;
