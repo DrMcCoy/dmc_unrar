@@ -253,7 +253,11 @@ typedef int bool;
 		#define DMC_UNRAR_64BIT 0
 	#endif
 #elif (DMC_UNRAR_32BIT == 1) && (DMC_UNRAR_64BIT == 1)
-	#error "Both DMC_UNRAR_32BIT and DMC_UNRAR_64BIT set to 1"
+	#error Both DMC_UNRAR_32BIT and DMC_UNRAR_64BIT set to 1
+#endif
+
+#if (DMC_UNRAR_BS_BUFFER_SIZE <= 0) || ((DMC_UNRAR_BS_BUFFER_SIZE % 8) != 0)
+	#error DMC_UNRAR_BS_BUFFER_SIZE must be a multiple of 8
 #endif
 /* --- API types and macros --- */
 
