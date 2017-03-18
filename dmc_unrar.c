@@ -63,7 +63,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version 1.5.0)
+ * Saturday, 2017-03-18 (Version 1.5.0)
  * - Documented file attributes for DOS/Windows and Unix
  * - Added more accurate detection of symbolic links
  * - Added dmc_unrar_extract_file_with_callback()
