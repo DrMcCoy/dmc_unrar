@@ -68,6 +68,7 @@
  * - Added more accurate detection of symbolic links
  * - Added dmc_unrar_extract_file_with_callback()
  * - Added archive extraction functions using stdio file
+ * - Added simple validator typedefs for type lengths
  *
  * Monday, 2017-03-13 (Version 1.4.0)
  * - Fixed compilation on older gcc
@@ -804,6 +805,15 @@ uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, size_
 /* --- End of header, implementation follows --- */
 
 #ifndef DMC_UNRAR_HEADER_FILE_ONLY
+
+typedef unsigned char dmc_unrar_validate_uint8 [sizeof(uint8_t )==1 ? 1 : -1];
+typedef unsigned char dmc_unrar_validate_uint16[sizeof(uint16_t)==2 ? 1 : -1];
+typedef unsigned char dmc_unrar_validate_uint32[sizeof(uint32_t)==4 ? 1 : -1];
+typedef unsigned char dmc_unrar_validate_uint64[sizeof(uint64_t)==8 ? 1 : -1];
+typedef unsigned char dmc_unrar_validate_int8  [sizeof( int8_t )==1 ? 1 : -1];
+#if DMC_UNRAR_DISABLE_PPMD != 1
+typedef unsigned char dmc_unrar_validate_int64 [sizeof( int64_t)==8 ? 1 : -1];
+#endif
 
 #include <stdlib.h>
 #include <string.h>
