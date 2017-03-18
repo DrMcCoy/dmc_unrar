@@ -67,6 +67,7 @@
  * - Documented file attributes for DOS/Windows and Unix
  * - Added more accurate detection of symbolic links
  * - Added dmc_unrar_extract_file_with_callback()
+ * - Added archive extraction functions using stdio file
  *
  * Monday, 2017-03-13 (Version 1.4.0)
  * - Fixed compilation on older gcc
@@ -278,6 +279,7 @@ typedef enum {
 
 	DMC_UNRAR_OPEN_FAIL,
 	DMC_UNRAR_READ_FAIL,
+	DMC_UNRAR_WRITE_FAIL,
 	DMC_UNRAR_SEEK_FAIL,
 
 	DMC_UNRAR_INVALID_DATA,
@@ -696,6 +698,38 @@ dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive
 	void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc,
 	void *opaque, dmc_unrar_extract_callback_func callback);
 
+#if DMC_UNRAR_DISABLE_STDIO != 1
+/** Extract a file entry into a file.
+ *
+ *  @param  archive The archive to extract from.
+ *  @param  index The index of the file entry to extract.
+ *  @param  file The file to write into.
+ *  @param  uncompressed_size If not NULL, the number of bytes written
+ *          to the file will be stored here.
+ *  @param  validate_crc If true, validate the uncompressed data against
+ *          the CRC-32 stored within the archive. If the validation fails,
+ *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
+ *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
+ */
+dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size_t index,
+	FILE *file, size_t *uncompressed_size, bool validate_crc);
+
+/** Open a file and extract a RAR file entry into it.
+ *
+ *  @param  archive The archive to extract from.
+ *  @param  index The index of the file entry to extract.
+ *  @param  path The file to open and write into.
+ *  @param  uncompressed_size If not NULL, the number of bytes written
+ *          to the file will be stored here.
+ *  @param  validate_crc If true, validate the uncompressed data against
+ *          the CRC-32 stored within the archive. If the validation fails,
+ *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
+ *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
+ */
+dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size_t index,
+	const char *path, size_t *uncompressed_size, bool validate_crc);
+#endif /* DMC_UNRAR_DISABLE_STDIO */
+
 /** Return true if the given \0-terminated string contains valid UTF-8 data. */
 bool dmc_unrar_unicode_is_valid_utf8(const char *str);
 
@@ -817,6 +851,9 @@ const char *dmc_unrar_strerror(dmc_unrar_return code) {
 
 		case DMC_UNRAR_READ_FAIL:
 			return "Read error";
+
+		case DMC_UNRAR_WRITE_FAIL:
+			return "Write error";
 
 		case DMC_UNRAR_SEEK_FAIL:
 			return "Seek error";
@@ -3640,6 +3677,98 @@ dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size
 
 	return DMC_UNRAR_OK;
 }
+
+#if DMC_UNRAR_DISABLE_STDIO != 1
+bool dmc_unrar_extract_callback_file(void *opaque, void **buffer,
+	size_t *buffer_size, size_t uncompressed_size, dmc_unrar_return *err) {
+
+	FILE *file = (FILE *)opaque;
+	DMC_UNRAR_ASSERT(file);
+
+	if (fwrite(*buffer, 1, uncompressed_size, file) != uncompressed_size) {
+		*err = DMC_UNRAR_WRITE_FAIL;
+		return false;
+	}
+
+	(void)buffer_size;
+	return true;
+}
+
+static dmc_unrar_return dmc_unrar_get_file_checked(dmc_unrar_archive *archive, size_t index,
+		dmc_unrar_file_block **file) {
+
+	const dmc_unrar_return is_supported = dmc_unrar_file_is_supported(archive, index);
+	if (is_supported != DMC_UNRAR_OK)
+		return is_supported;
+
+	assert(file);
+
+	*file = dmc_unrar_get_file(archive, index);
+	assert(*file);
+
+	return DMC_UNRAR_OK;
+}
+
+dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size_t index,
+	FILE *file, size_t *uncompressed_size, bool validate_crc) {
+
+	uint8_t buffer[4096];
+	dmc_unrar_file_block *file_entry = NULL;
+
+	if (!archive || !file)
+		return DMC_UNRAR_ARCHIVE_EMPTY;
+
+	if (uncompressed_size)
+		*uncompressed_size = 0;
+
+	{
+		dmc_unrar_return has_file;
+		if ((has_file = dmc_unrar_get_file_checked(archive, index, &file_entry)) != DMC_UNRAR_OK)
+			return has_file;
+	}
+
+	assert(file_entry);
+
+	{
+		uint32_t crc = 0;
+		size_t output_size;
+		dmc_unrar_return extracted;
+
+		extracted = dmc_unrar_file_extract(archive, file_entry, buffer, DMC_UNRAR_ARRAYSIZE(buffer),
+		            &output_size, &crc, file, &dmc_unrar_extract_callback_file);
+
+		if (extracted != DMC_UNRAR_OK)
+			return extracted;
+
+		if (uncompressed_size)
+			*uncompressed_size = output_size;
+
+		if (validate_crc)
+			if (file_entry->file.has_crc && (file_entry->file.crc != crc))
+				return DMC_UNRAR_FILE_CRC32_FAIL;
+	}
+
+	if (fflush(file) || ferror(file))
+		return DMC_UNRAR_WRITE_FAIL;
+
+	return DMC_UNRAR_OK;
+}
+
+dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size_t index,
+	const char *path, size_t *uncompressed_size, bool validate_crc) {
+
+	dmc_unrar_return return_code;
+	FILE *file = NULL;
+
+	if (!(file = fopen(path, "wb")))
+		return DMC_UNRAR_OPEN_FAIL;
+
+	return_code = dmc_unrar_extract_file_to_file(archive, index, file, uncompressed_size, validate_crc);
+
+	fclose(file);
+	return return_code;
+}
+#endif /* DMC_UNRAR_DISABLE_STDIO */
 
 typedef size_t (*dmc_unrar_extractor_func)(void *opaque, void *buffer, size_t buffer_size,
 	dmc_unrar_return *err);
