@@ -578,7 +578,8 @@ size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment, 
 /** Return the number of file entries in this RAR archive. */
 size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive);
 
-/** Return the detailed information about a file entry, or NULL on error. */
+/** Return the detailed information about a file entry, or NULL on error.
+ *  Does not need to be free'd. */
 const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index);
 
 /** Get the filename of a RAR file entry, UTF-8 encoded and \0-terminated.
