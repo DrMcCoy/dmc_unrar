@@ -63,6 +63,10 @@
 
 /* Version history:
  *
+ * Sunday, 2017-03-19 (Version 1.5.1)
+ * - Removed usage of variable name "unix"
+ * - Fixed dmc_unrar_io_init_file_reader()
+ *
  * Saturday, 2017-03-18 (Version 1.5.0)
  * - Documented file attributes for DOS/Windows and Unix
  * - Added more accurate detection of symbolic links
