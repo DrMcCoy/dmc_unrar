@@ -2271,7 +2271,7 @@ static void dmc_unrar_decode_dos_time(uint32_t dos_time,
 static uint64_t dmc_unrar_time_to_unix_time(int year, int month, int day, int hour, int minute, int second) {
 	static const uint16_t days_to_month_start[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 	uint32_t years, leap_years;
-	uint64_t unix = 0;
+	uint64_t unix_time = 0;
 
 	if (year < 1970)
 		return 0;
@@ -2279,14 +2279,14 @@ static uint64_t dmc_unrar_time_to_unix_time(int year, int month, int day, int ho
 	years      = year - 1970;
 	leap_years = ((year - 1) - 1968) / 4 - ((year - 1) - 1900) / 100 + ((year - 1) - 1600) / 400;
 
-	unix += second + 60 * minute + 60 * 60 * hour;
-	unix += (days_to_month_start[month - 1] + day - 1) * 60 * 60 * 24;
-	unix += (years * 365 + leap_years) * 60 * 60 * 24;
+	unix_time += second + 60 * minute + 60 * 60 * hour;
+	unix_time += (days_to_month_start[month - 1] + day - 1) * 60 * 60 * 24;
+	unix_time += (years * 365 + leap_years) * 60 * 60 * 24;
 
 	if ((month > 2) && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
-		unix += 60 * 60 * 24;
+		unix_time += 60 * 60 * 24;
 
-	return unix;
+	return unix_time;
 }
 
 static bool dmc_unrar_rar_file_is_link(dmc_unrar_file_block *file) {
