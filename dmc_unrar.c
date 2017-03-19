@@ -1372,6 +1372,9 @@ static void dmc_unrar_io_init_file_reader(dmc_unrar_io *io, dmc_unrar_file_reade
 	io->func_read = &dmc_unrar_file_read_func;
 	io->func_seek = &dmc_unrar_file_seek_func;
 	io->opaque    = file_reader;
+
+	io->offset = 0;
+	io->size   = file_reader->size;
 }
 
 static bool dmc_unrar_io_is_file_reader(dmc_unrar_io *io) {
