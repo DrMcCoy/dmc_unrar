@@ -3099,8 +3099,7 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 		uint16_t *name_utf16, size_t *name_utf16_length) {
 
 	/* Unicode filenames in RAR archives might be UTF-16 encoded, and then
-	 * compressed with a by remembering a common high byte value and
-	 * some simple RLE.
+	 * compressed by remembering a common high byte value and some simple RLE.
 	 *
 	 * The data is split in a data section for RLE and a command section,
 	 * split by a 0-byte.
