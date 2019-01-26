@@ -70,6 +70,7 @@
 /* Version history:
  *
  * Someday, ????-??-?? (Version ?)
+ * - Fixed RAR4 UTF-16 filenames with non-Latin characters
  * - Correctly implemented dmc_unrar_extract_file_with_callback()
  *
  * Sunday, 2017-03-19 (Version 1.5.1)
@@ -3128,7 +3129,7 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 	utf16_data = data + utf16_data_begin + 1;
 
 	/* Common high byte. */
-	high_byte = *utf16_data++;
+	high_byte = *utf16_data++ << 8;
 	utf16_data_length--;
 
 	while (utf16_data_length > 0) {
@@ -3161,6 +3162,7 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 			case 2: /* Full 2-byte UTF-16 code unit. */
 				if (utf16_data_length >= 2) {
 					name_utf16[(*name_utf16_length)++] = dmc_unrar_get_uint16le(utf16_data);
+					utf16_data += 2;
 					utf16_data_length -= 2;
 				}
 				break;
