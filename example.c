@@ -218,7 +218,7 @@ const char *get_filename_no_directory(const char *filename) {
 	if (!filename)
 		return 0;
 
-	char *p = strrchr(filename, '/');
+	char *p = (char *) strrchr(filename, '/');
 	if (!p)
 		return filename;
 
