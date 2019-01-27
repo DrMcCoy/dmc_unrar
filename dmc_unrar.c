@@ -70,6 +70,7 @@
 /* Version history:
  *
  * Someday, ????-??-?? (Version ?)
+ * - Fixed RAR5 file block extra data parsing
  * - Fixed RAR4 UTF-16 filenames with non-Latin characters
  * - Correctly implemented dmc_unrar_extract_file_with_callback()
  *
@@ -1427,6 +1428,12 @@ static bool dmc_unrar_archive_seek(dmc_unrar_io *io, uint64_t offset) {
 	return result;
 }
 
+static uint64_t dmc_unrar_archive_tell(dmc_unrar_io *io) {
+	DMC_UNRAR_ASSERT(io);
+
+	return io->offset;
+}
+
 static size_t dmc_unrar_archive_read(dmc_unrar_io *io, void *buffer, size_t n) {
 	size_t result;
 	DMC_UNRAR_ASSERT(io);
@@ -2658,6 +2665,9 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 
 			if (!dmc_unrar_rar5_read_number(&archive->io, &size))
 				return DMC_UNRAR_READ_FAIL;
+
+			pos = dmc_unrar_archive_tell(&archive->io);
+
 			if (!dmc_unrar_rar5_read_number(&archive->io, &type))
 				return DMC_UNRAR_READ_FAIL;
 
