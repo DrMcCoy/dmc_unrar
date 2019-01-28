@@ -41,7 +41,6 @@
  * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
- * - RAR 2.9/3.6 archives with the Itanium filter
  *
  * Features we don't support, and don't really plan to:
  * - Creating RARs of any kind
@@ -70,6 +69,7 @@
 /* Version history:
  *
  * Someday, ????-??-?? (Version ?)
+ * - Implemented the Itanium filter
  * - Fixed RAR5 file block extra data parsing
  * - Fixed RAR4 UTF-16 filenames with non-Latin characters
  * - Correctly implemented dmc_unrar_extract_file_with_callback()
@@ -341,7 +341,6 @@ typedef enum {
 	DMC_UNRAR_FILTERS_INVALID_LENGTH,
 	DMC_UNRAR_FILTERS_INVALID_FILE_POSITION,
 	DMC_UNRAR_FILTERS_XOR_SUM_NO_MATCH,
-	DMC_UNRAR_FILTERS_UNSUPPORED_ITANIUM,
 
 	DMC_UNRAR_15_INVALID_FLAG_INDEX,
 	DMC_UNRAR_15_INVALID_LONG_MATCH_OFFSET_INDEX,
@@ -974,9 +973,6 @@ const char *dmc_unrar_strerror(dmc_unrar_return code) {
 
 		case DMC_UNRAR_FILTERS_XOR_SUM_NO_MATCH:
 			return "Filter xor sum doesn't match";
-
-		case DMC_UNRAR_FILTERS_UNSUPPORED_ITANIUM:
-			return "Unsupported filter: Itanium";
 
 		case DMC_UNRAR_15_INVALID_FLAG_INDEX:
 			return "Invalid flag index in RAR 1.5 decoder";
@@ -10269,6 +10265,9 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, size_t me
 static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, size_t memory_size,
 	size_t file_position, size_t in_length, const uint32_t *registers,
 	size_t *out_offset, size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, size_t memory_size,
+	size_t file_position, size_t in_length, const uint32_t *registers,
+	size_t *out_offset, size_t *out_length);
 
 static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_unrar_filters *filters,
 		const uint8_t *bytecode, size_t bytecode_length) {
@@ -10289,8 +10288,6 @@ static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_u
 	program = dmc_unrar_filters_identify_rar4(bytecode, bytecode_length);
 	if (program == DMC_UNRAR_FILTERS_PROGRAM4_UNKNOWN)
 		return DMC_UNRAR_FILTERS_UNKNOWN;
-	if (program == DMC_UNRAR_FILTERS_PROGRAM4_30_ITANIUM)
-		return DMC_UNRAR_FILTERS_UNSUPPORED_ITANIUM;
 
 	if (!dmc_unrar_filters_grow_filters(filters))
 		return DMC_UNRAR_ALLOC_FAIL;
@@ -10318,6 +10315,10 @@ static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_u
 
 		case DMC_UNRAR_FILTERS_PROGRAM4_30_X86_E9:
 			filter->func = &dmc_unrar_filters_30_x86_e9_func;
+			break;
+
+		case DMC_UNRAR_FILTERS_PROGRAM4_30_ITANIUM:
+			filter->func = &dmc_unrar_filters_30_itanium_func;
 			break;
 
 		default:
@@ -10691,6 +10692,82 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, size_t
 	*out_length = in_length;
 
 	dmc_unrar_filters_x86_filter(memory, in_length, file_position, true, false);
+
+	(void)registers;
+	return DMC_UNRAR_OK;
+}
+
+static uint32_t dmc_unrar_filters_itanium_read_bits(const uint8_t *buf, size_t offset, size_t n) {
+	uint32_t x;
+
+	DMC_UNRAR_ASSERT(buf);
+	DMC_UNRAR_ASSERT(n < 32);
+
+	x = dmc_unrar_get_uint32le(buf + (offset / 8)) >> (offset % 8);
+
+	return x & (0xFFFFFFFF >> (32 - n));
+}
+
+static void dmc_unrar_filters_itanium_write_bits(uint8_t *buf, size_t offset, size_t n, uint32_t x) {
+	uint32_t mask;
+
+	DMC_UNRAR_ASSERT(buf);
+	DMC_UNRAR_ASSERT(n < 32);
+
+	mask = ((0xFFFFFFFF >> (32 - n)) << (offset % 8));
+	x  = (x << (offset % 8)) & mask;
+
+	x = (dmc_unrar_get_uint32le(buf + (offset / 8)) & ~mask) | x;
+
+	dmc_unrar_put_uint32le(buf + (offset / 8), x);
+}
+
+static void dmc_unrar_filters_itanium_filter(uint8_t *memory, size_t length, int32_t file_pos) {
+	static const uint8_t DMC_UNRAR_BYTEMASK[] = { 4, 4, 6, 6, 0, 0, 7, 7, 4, 4, 0, 0, 4, 4, 0, 0 };
+	size_t i, j, k;
+
+	file_pos /= 16;
+
+	for (i = 0, j = 0; (i + 22) < length; i += 16, j++) {
+		const int mask_index = ((int)(memory[i] & 0x1F)) - 0x10;
+		uint8_t mask;
+
+		if (mask_index < 0)
+			continue;
+
+		mask = DMC_UNRAR_BYTEMASK[mask_index];
+		if (mask == 0)
+			continue;
+
+		for (k = 0; k <= 2; k++) {
+			const size_t position = k * 41 + 18;
+			uint32_t n;
+
+			if ((mask & (1 << k)) == 0)
+				continue;
+
+			if (dmc_unrar_filters_itanium_read_bits(memory + i, position + 24, 4) != 5)
+				continue;
+
+			n = dmc_unrar_filters_itanium_read_bits(memory + i, position, 20) - (file_pos + j);
+			dmc_unrar_filters_itanium_write_bits(memory + i, position, 20, n);
+		}
+	}
+}
+
+static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, size_t memory_size,
+		size_t file_position, size_t in_length, const uint32_t *registers,
+		size_t *out_offset, size_t *out_length) {
+
+	if ((in_length > memory_size) || (in_length < 16))
+		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
+	if (file_position >= 0x7FFFFFFF)
+		return DMC_UNRAR_FILTERS_INVALID_FILE_POSITION;
+
+	*out_offset = 0;
+	*out_length = in_length;
+
+	dmc_unrar_filters_itanium_filter(memory, in_length, file_position);
 
 	(void)registers;
 	return DMC_UNRAR_OK;
