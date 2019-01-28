@@ -37,18 +37,22 @@ const char *get_filename(dmc_unrar_archive *archive, size_t i);
 const char *get_filename_no_directory(const char *filename);
 
 int main(int argc, char **argv) {
+	size_t i;
+	char cmd;
+
+	const char *comment = 0;
+	dmc_unrar_archive archive;
+	dmc_unrar_return return_code;
+
 	if (argc < 3)
 		return display_help(argv[0]);
 
-	const char cmd = get_command(argv[1]);
+	cmd = get_command(argv[1]);
 	if (cmd == 0)
 		return display_help(argv[0]);
 
 	if (!dmc_unrar_is_rar_path(argv[2]))
 		return display_help(argv[0]);
-
-	dmc_unrar_archive archive;
-	dmc_unrar_return return_code;
 
 	return_code = dmc_unrar_archive_init(&archive);
 	if (return_code != DMC_UNRAR_OK)
@@ -58,7 +62,7 @@ int main(int argc, char **argv) {
 	if (return_code != DMC_UNRAR_OK)
 		return display_error("Open", dmc_unrar_strerror(return_code));
 
-	const char *comment = get_archive_comment(&archive);
+	comment = get_archive_comment(&archive);
 	if (comment) {
 		printf(".--- Archive comment:\n");
 		printf("%s\n", comment);
@@ -66,15 +70,15 @@ int main(int argc, char **argv) {
 		free((char *)comment);
 	}
 
-	for (size_t i = 0; i < dmc_unrar_get_file_count(&archive); i++) {
-		const char *name = get_filename(&archive, i);
+	for (i = 0; i < dmc_unrar_get_file_count(&archive); i++) {
+		const char *name = get_filename(&archive, i), *file_comment = 0;
 		const dmc_unrar_file *file = dmc_unrar_get_file_stat(&archive, i);
 
 		printf("%u/%u: \"%s\" - %u bytes\n",
 		       (unsigned int)(i+1), (unsigned int)dmc_unrar_get_file_count(&archive),
 		       name ? name : "", file ? (unsigned int)file->uncompressed_size : (unsigned int)0);
 
-		const char *file_comment = get_file_comment(&archive, i);
+		file_comment = get_file_comment(&archive, i);
 		if (file_comment) {
 			printf(".--- File comment:\n");
 			printf("%s\n", file_comment);
@@ -123,10 +127,12 @@ int display_error(const char *where, const char *str) {
 }
 
 char get_command(const char *param) {
+	char cmd;
+
 	if (!param || (param[0] == '\0') || (param[1] != '\0'))
 		return 0;
 
-	const char cmd = param[0];
+	cmd = param[0];
 	if ((cmd != 'l') && (cmd != 'e'))
 		return 0;
 
@@ -165,11 +171,12 @@ static const char *convert_comment(uint8_t *data, size_t size) {
 }
 
 const char *get_archive_comment(dmc_unrar_archive *archive) {
+	uint8_t *data = 0;
 	size_t size = dmc_unrar_get_archive_comment(archive, 0, 0);
 	if (!size)
 		return 0;
 
-	uint8_t *data = (uint8_t *)malloc(size + 1);
+	data = (uint8_t *)malloc(size + 1);
 	if (!data)
 		return 0;
 
@@ -178,11 +185,12 @@ const char *get_archive_comment(dmc_unrar_archive *archive) {
 }
 
 const char *get_file_comment(dmc_unrar_archive *archive, size_t i) {
+	uint8_t *data = 0;
 	size_t size = dmc_unrar_get_file_comment(archive, i, 0, 0);
 	if (!size)
 		return 0;
 
-	uint8_t *data = (uint8_t *)malloc(size + 1);
+	data = (uint8_t *)malloc(size + 1);
 	if (!data)
 		return 0;
 
@@ -191,11 +199,12 @@ const char *get_file_comment(dmc_unrar_archive *archive, size_t i) {
 }
 
 const char *get_filename(dmc_unrar_archive *archive, size_t i) {
+	char *filename = 0;
 	size_t size = dmc_unrar_get_filename(archive, i, 0, 0);
 	if (!size)
 		return 0;
 
-	char *filename = (char *)malloc(size);
+	filename = (char *)malloc(size);
 	if (!filename)
 		return 0;
 
@@ -215,10 +224,11 @@ const char *get_filename(dmc_unrar_archive *archive, size_t i) {
 }
 
 const char *get_filename_no_directory(const char *filename) {
+	char *p = 0;
 	if (!filename)
 		return 0;
 
-	char *p = (char *) strrchr(filename, '/');
+	p = (char *) strrchr(filename, '/');
 	if (!p)
 		return filename;
 
