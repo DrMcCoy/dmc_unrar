@@ -72,6 +72,7 @@
  * - Implemented the Itanium filter
  * - Fixed RAR5 file block extra data parsing
  * - Fixed RAR4 UTF-16 filenames with non-Latin characters
+ * - Plugged a potential leak when growing internal structures
  * - Correctly implemented dmc_unrar_extract_file_with_callback()
  *
  * Sunday, 2017-03-19 (Version 1.5.1)
@@ -1977,18 +1978,24 @@ static bool dmc_unrar_init_internal_blocks(dmc_unrar_archive *archive) {
 
 /** Make sure we have enough space in the blocks array for one more block. */
 static bool dmc_unrar_ensure_block_capacity(dmc_unrar_archive *archive) {
+	dmc_unrar_block_header *new_blocks;
+	size_t new_capacity;
+
 	if (archive->internal_state->block_count < archive->internal_state->block_capacity)
 		return true;
 
-	archive->internal_state->block_capacity =
-		DMC_UNRAR_MAX(archive->internal_state->block_capacity, 1);
-
-	archive->internal_state->block_capacity *= 2;
-	archive->internal_state->blocks = (dmc_unrar_block_header *)
+	new_capacity = DMC_UNRAR_MAX(archive->internal_state->block_capacity, 1) * 2;
+	new_blocks = (dmc_unrar_block_header *)
 		dmc_unrar_realloc(&archive->alloc, archive->internal_state->blocks,
-		                  archive->internal_state->block_capacity, sizeof(dmc_unrar_block_header));
+		                  new_capacity, sizeof(dmc_unrar_block_header));
 
-	return archive->internal_state->blocks != NULL;
+	if (!new_blocks)
+		return false;
+
+	archive->internal_state->block_capacity = new_capacity;
+	archive->internal_state->blocks = new_blocks;
+
+	return true;
 }
 
 /** Add one more element to the blocks array. */
@@ -2014,17 +2021,24 @@ static bool dmc_unrar_init_internal_files(dmc_unrar_archive *archive) {
 
 /** Make sure we have enough space in the files array for one more files. */
 static bool dmc_unrar_ensure_file_capacity(dmc_unrar_archive *archive) {
+	dmc_unrar_file_block *new_files;
+	size_t new_capacity;
+
 	if (archive->internal_state->file_count < archive->internal_state->file_capacity)
 		return true;
 
-	archive->internal_state->file_capacity = DMC_UNRAR_MAX(archive->internal_state->file_capacity, 1);
-
-	archive->internal_state->file_capacity *= 2;
-	archive->internal_state->files = (dmc_unrar_file_block *)
+	new_capacity = DMC_UNRAR_MAX(archive->internal_state->file_capacity, 1) * 2;
+	new_files = (dmc_unrar_file_block *)
 		dmc_unrar_realloc(&archive->alloc, archive->internal_state->files,
-		                  archive->internal_state->file_capacity, sizeof(dmc_unrar_file_block));
+		                  new_capacity, sizeof(dmc_unrar_file_block));
 
-	return archive->internal_state->files != NULL;
+	if (!new_files)
+		return false;
+
+	archive->internal_state->file_capacity = new_capacity;
+	archive->internal_state->files = new_files;
+
+	return true;
 }
 
 /** Add one more element to the files array. */
@@ -10364,18 +10378,24 @@ static bool dmc_unrar_filters_init_filters(dmc_unrar_filters *filters) {
 }
 
 static bool dmc_unrar_filters_ensure_capacity_filters(dmc_unrar_filters *filters) {
+	dmc_unrar_filters_filter *new_filters;
+	size_t new_capacity;
+
 	if (filters->internal_state->filter_count < filters->internal_state->filter_capacity)
 		return true;
 
-	filters->internal_state->filter_capacity =
-		DMC_UNRAR_MAX(filters->internal_state->filter_capacity, 1);
-
-	filters->internal_state->filter_capacity *= 2;
-	filters->internal_state->filters = (dmc_unrar_filters_filter *)
+	new_capacity = DMC_UNRAR_MAX(filters->internal_state->filter_capacity, 1) * 2;
+	new_filters = (dmc_unrar_filters_filter *)
 		dmc_unrar_realloc(filters->alloc, filters->internal_state->filters,
-		                  filters->internal_state->filter_capacity, sizeof(dmc_unrar_filters_filter));
+		                  new_capacity, sizeof(dmc_unrar_filters_filter));
 
-	return filters->internal_state->filters != NULL;
+	if (!new_filters)
+		return false;
+
+	filters->internal_state->filter_capacity = new_capacity;
+	filters->internal_state->filters = new_filters;
+
+	return true;
 }
 
 static bool dmc_unrar_filters_grow_filters(dmc_unrar_filters *filters) {
@@ -10398,19 +10418,24 @@ static bool dmc_unrar_filters_init_stack(dmc_unrar_filters *filters) {
 }
 
 static bool dmc_unrar_filters_ensure_capacity_stack(dmc_unrar_filters *filters) {
+	dmc_unrar_filters_stack_entry *new_stack;
+	size_t new_capacity;
+
 	if (filters->internal_state->stack_count < filters->internal_state->stack_capacity)
 		return true;
 
-	filters->internal_state->stack_capacity =
-		DMC_UNRAR_MAX(filters->internal_state->stack_capacity, 1);
-
-	filters->internal_state->stack_capacity *= 2;
-	filters->internal_state->stack = (dmc_unrar_filters_stack_entry *)
+	new_capacity = DMC_UNRAR_MAX(filters->internal_state->stack_capacity, 1) * 2;
+	new_stack = (dmc_unrar_filters_stack_entry *)
 		dmc_unrar_realloc(filters->alloc, filters->internal_state->stack,
-		                  filters->internal_state->stack_capacity,
-		                  sizeof(dmc_unrar_filters_stack_entry));
+		                  new_capacity, sizeof(dmc_unrar_filters_stack_entry));
 
-	return filters->internal_state->filters != NULL;
+	if (!new_stack)
+		return false;
+
+	filters->internal_state->stack_capacity = new_capacity;
+	filters->internal_state->stack = new_stack;
+
+	return true;
 }
 
 static bool dmc_unrar_filters_grow_stack(dmc_unrar_filters *filters) {
