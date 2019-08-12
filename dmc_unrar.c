@@ -68,7 +68,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version ?)
+ * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
  * - Fixed RAR5 file block extra data parsing
  * - Fixed RAR4 UTF-16 filenames with non-Latin characters
