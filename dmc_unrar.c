@@ -80,6 +80,7 @@
  *
  * Someday, ????-??-?? (Version ?)
  * - Changed internal I/O interface to be more flexible
+ * - Added Win32 direct file access for future large file support
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -288,6 +289,23 @@ typedef int bool;
 
 #if (DMC_UNRAR_BS_BUFFER_SIZE <= 0) || ((DMC_UNRAR_BS_BUFFER_SIZE % 8) != 0)
 	#error DMC_UNRAR_BS_BUFFER_SIZE must be a multiple of 8
+#endif
+
+/* Autodetecting whether we're on Win32. You can set this to 1 to disable this and fallback
+ * on stdio (if available). */
+#ifndef DMC_UNRAR_DISABLE_WIN32
+	#ifdef _WIN32
+		#define DMC_UNRAR_DISABLE_WIN32 0
+	#else
+		#define DMC_UNRAR_DISABLE_WIN32 1
+	#endif
+#endif
+
+/* --- Windows-specific headers --- */
+
+#if DMC_UNRAR_DISABLE_WIN32 != 1
+#define WIN32_MEAN_AND_LEAN
+#include <windows.h>
 #endif
 
 /* --- API types and macros --- */
@@ -1527,7 +1545,100 @@ dmc_unrar_io_handler dmc_unrar_io_stdio_handler = {
 };
 #endif /* DMC_UNRAR_DISABLE_STDIO */
 
-#if DMC_UNRAR_DISABLE_STDIO != 1
+#if DMC_UNRAR_DISABLE_WIN32 != 1
+static void *dmc_unrar_io_win32_open_func(const char *path) {
+	/* Assuming we have a UTF-8 path, we need to first convert this to UTF-16 */
+	HANDLE file;
+	int buf_size;
+	int result;
+
+#if DMC_UNRAR_DISABLE_MALLOC == 1
+	wchar_t buf[MAX_PATH];
+	buf_size = MAX_PATH;
+#else
+	wchar_t *buf;
+
+	/* Calculate the buffer size needed */
+	buf_size = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+	if (buf_size == 0)
+		return NULL;
+
+	/* Allocate that size in the buffer */
+	buf = DMC_UNRAR_MALLOC(buf_size * sizeof(wchar_t));
+	if (buf == NULL)
+		return NULL;
+#endif
+
+	/* Actually convert the data now */
+	result = MultiByteToWideChar(CP_UTF8, 0, path, -1, buf, buf_size);
+	if (result == 0) {
+		file = INVALID_HANDLE_VALUE;
+		goto end;
+	}
+
+	/* Actually open the file */
+	file = CreateFileW(
+		buf,
+		GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL, /* TODO */
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		NULL);
+
+end:
+	/* Ensure the buffer is freed if we allocated it */
+#if DMC_UNRAR_DISABLE_MALLOC != 1
+	DMC_UNRAR_FREE(buf);
+#endif
+
+	return (file == INVALID_HANDLE_VALUE) ? NULL : file;
+}
+
+static void dmc_unrar_io_win32_close_func(void *opaque) {
+	if (opaque != NULL)
+		CloseHandle((HANDLE)opaque);
+}
+
+static size_t dmc_unrar_io_win32_read_func(void *opaque, void *buffer, size_t n) {
+	DWORD bytes_read;
+	BOOL result;
+
+	/* Clip the read to 32-bit max */
+	n = DMC_UNRAR_MIN(n, (uint32_t)-1);
+
+	result = ReadFile((HANDLE)opaque, buffer, n, &bytes_read, NULL);
+	if (result == FALSE)
+		return 0;
+
+	return bytes_read;
+}
+
+static bool dmc_unrar_io_win32_seek_func(void *opaque, int64_t offset, int origin) {
+	LARGE_INTEGER offset_large;
+	offset_large.QuadPart = offset;
+	return SetFilePointerEx((HANDLE)opaque, offset_large, NULL, origin) != 0;
+}
+
+static int64_t dmc_unrar_io_win32_tell_func(void *opaque) {
+	LARGE_INTEGER offset, cur_pos;
+	cur_pos.QuadPart = 0;
+	SetFilePointerEx((HANDLE)opaque, cur_pos, &offset, FILE_CURRENT);
+	return offset.QuadPart;
+}
+
+dmc_unrar_io_handler dmc_unrar_io_win32_handler = {
+	dmc_unrar_io_win32_open_func,
+	dmc_unrar_io_win32_close_func,
+	dmc_unrar_io_win32_read_func,
+	dmc_unrar_io_win32_seek_func,
+	dmc_unrar_io_win32_tell_func
+};
+#endif /* DMC_UNRAR_DISABLE_WIN32 */
+
+#if DMC_UNRAR_DISABLE_WIN32 != 1
+dmc_unrar_io_handler *dmc_unrar_io_default_handler = &dmc_unrar_io_win32_handler;
+#elif DMC_UNRAR_DISABLE_STDIO != 1
 dmc_unrar_io_handler *dmc_unrar_io_default_handler = &dmc_unrar_io_stdio_handler;
 #else
 dmc_unrar_io_handler *dmc_unrar_io_default_handler = &dmc_unrar_io_dummy_handler;
