@@ -2786,7 +2786,7 @@ static bool dmc_unrar_unicode_utf32_is_overlong(uint32_t code, size_t length) {
 }
 
 /** Return the number of octets the Unicode codepoint takes as a UTF-8 code unit. */
-static size_t dmc_unrar_unicode_utf8_get_octect_count(uint32_t code) {
+static size_t dmc_unrar_unicode_utf8_get_octet_count(uint32_t code) {
 	if (!dmc_unrar_unicode_utf32_is_valid(code))
 		return 0;
 
@@ -2974,7 +2974,7 @@ static bool dmc_unrar_unicode_utf16_to_utf8(const void *utf16_data, size_t utf16
 		  /* Codepoint is not valid => broken data. */
 			return false;
 
-		length = dmc_unrar_unicode_utf8_get_octect_count(codepoint);
+		length = dmc_unrar_unicode_utf8_get_octet_count(codepoint);
 		if (utf8_size < length)
 			break;
 
