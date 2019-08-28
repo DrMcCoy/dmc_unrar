@@ -2685,9 +2685,11 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 			switch (type) {
 				case DMC_UNRAR_FILE5_PROPERTY_ENCRYPTION:
 					file->is_encrypted = true;
+					break;
 
 				case DMC_UNRAR_FILE5_PROPERTY_LINK:
 					file->is_link = true;
+					break;
 
 				default:
 					break;
