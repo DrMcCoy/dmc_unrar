@@ -72,6 +72,7 @@
 /* Contributors:
  *
  * Amos Wenger <amoswenger@gmail.com>
+ * Matthew Hoops <clone2727@gmail.com>
  *
  */
 
