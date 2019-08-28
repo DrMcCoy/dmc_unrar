@@ -58,6 +58,15 @@
  * ideas for improvements, feature requests, etc. You can reach me at
  * <drmccoy@drmccoy.de>, or via the GitHub project page at
  * <https://github.com/DrMcCoy/dmc_unrar>.
+ *
+ * If you send patches and/or pull requests, please keep the style of
+ * your changes similar to the existing style. Also note that dmc_unrar
+ * should stay C89-clean-ish. This means that gcc and clang with the
+ * compiler options
+ * -std=gnu89 -Wall -Wextra -pedantic -Wno-long-long
+ * and
+ * -std=c89 -Wall -Wextra -pedantic -Wno-long-long -DDMC_UNRAR_DISABLE_BE32TOH_BE64TOH=1
+ * should report no warnings.
  */
 
 /* Contributors:
