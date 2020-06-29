@@ -2710,7 +2710,7 @@ static bool dmc_unrar_rar5_read_number(dmc_unrar_io *io, uint64_t *number) {
 		if (!dmc_unrar_io_read_uint8(io, &value))
 			return false;
 
-		*number |= (value & 0x7F) << pos;
+		*number |= ((uint64_t)(value & 0x7F)) << pos;
 		if (!(value & 0x80))
 			break;
 	}
