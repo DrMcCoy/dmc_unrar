@@ -2029,7 +2029,7 @@ typedef struct dmc_unrar_magic_tag {
 
 } dmc_unrar_magic;
 
-static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t buffer_size, size_t *offset) {
+static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t buffer_size, int64_t *offset) {
 	static const uint8_t DMC_UNRAR_MAGIC_13[] = { 0x52, 0x45, 0x7E, 0x5E };
 	static const uint8_t DMC_UNRAR_MAGIC_15[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00 };
 	static const uint8_t DMC_UNRAR_MAGIC_50[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00 };
@@ -2069,7 +2069,7 @@ static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
 	buffer_size = read_count;
 
 	while (read_count != 0) {
-		size_t offset;
+		int64_t offset;
 		dmc_unrar_generation gen = dmc_unrar_find_generation(buffer, buffer_size, &offset);
 
 		if (gen != DMC_UNRAR_GENERATION_INVALID) {
