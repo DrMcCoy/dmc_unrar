@@ -2545,9 +2545,9 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 	if (file->flags & DMC_UNRAR_FLAG4_FILE_LARGE) {
 		uint32_t high_uncomp, high_comp;
 
-		if (!dmc_unrar_io_read_uint32le(&archive->io, &high_uncomp))
-			return DMC_UNRAR_READ_FAIL;
 		if (!dmc_unrar_io_read_uint32le(&archive->io, &high_comp))
+			return DMC_UNRAR_READ_FAIL;
+		if (!dmc_unrar_io_read_uint32le(&archive->io, &high_uncomp))
 			return DMC_UNRAR_READ_FAIL;
 
 		file->file.uncompressed_size += ((uint64_t)high_uncomp) << 32;
