@@ -81,6 +81,8 @@
  * Someday, ????-??-?? (Version ?)
  * - Changed internal I/O interface to be more flexible
  * - Added Win32 direct file access for future large file support
+ * - Added a macro to optionally use fseeko/ftello for future large file
+ *   support, by default used on macOS
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -298,6 +300,16 @@ typedef int bool;
 		#define DMC_UNRAR_DISABLE_WIN32 0
 	#else
 		#define DMC_UNRAR_DISABLE_WIN32 1
+	#endif
+#endif
+
+/* Autodetecting whether we should use fseeko/ftello. You can set this to 1 to force this
+ * instead of falling back on fseek/ftell. */
+#if DMC_UNRAR_DISABLE_STDIO != 1 && !defined(DMC_UNRAR_USE_FSEEKO_FTELLO)
+	#if defined(__APPLE__) && DMC_UNRAR_32BIT == 1
+		#define DMC_UNRAR_USE_FSEEKO_FTELLO 1
+	#else
+		#define DMC_UNRAR_USE_FSEEKO_FTELLO 0
 	#endif
 #endif
 
@@ -1529,11 +1541,19 @@ static size_t dmc_unrar_io_stdio_read_func(void *opaque, void *buffer, size_t n)
 }
 
 static bool dmc_unrar_io_stdio_seek_func(void *opaque, int64_t offset, int origin) {
+#if DMC_UNRAR_USE_FSEEKO_FTELLO == 1
+	return fseeko((FILE *)opaque, offset, origin) == 0;
+#else
 	return fseek((FILE *)opaque, offset, origin) == 0;
+#endif
 }
 
 static int64_t dmc_unrar_io_stdio_tell_func(void *opaque) {
+#if DMC_UNRAR_USE_FSEEKO_FTELLO == 1
+	return ftello((FILE *)opaque);
+#else
 	return ftell((FILE *)opaque);
+#endif
 }
 
 dmc_unrar_io_handler dmc_unrar_io_stdio_handler = {
