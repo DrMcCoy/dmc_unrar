@@ -31,13 +31,13 @@ int display_error(const char *where, const char *str);
 char get_command(const char *param);
 
 const char *get_archive_comment(dmc_unrar_archive *archive);
-const char *get_file_comment(dmc_unrar_archive *archive, size_t i);
-const char *get_filename(dmc_unrar_archive *archive, size_t i);
+const char *get_file_comment(dmc_unrar_archive *archive, dmc_unrar_size_t i);
+const char *get_filename(dmc_unrar_archive *archive, dmc_unrar_size_t i);
 
 const char *get_filename_no_directory(const char *filename);
 
 int main(int argc, char **argv) {
-	size_t i;
+	dmc_unrar_size_t i;
 	char cmd;
 
 	const char *comment = NULL;
@@ -74,9 +74,9 @@ int main(int argc, char **argv) {
 		const char *name = get_filename(&archive, i), *file_comment = NULL;
 		const dmc_unrar_file *file = dmc_unrar_get_file_stat(&archive, i);
 
-		printf("%u/%u: \"%s\" - %u bytes\n",
+		printf("%u/%u: \"%s\" - %llu bytes\n",
 		       (unsigned int)(i+1), (unsigned int)dmc_unrar_get_file_count(&archive),
-		       name ? name : "", file ? (unsigned int)file->uncompressed_size : (unsigned int)0);
+		       name ? name : "", file ? (unsigned long long)file->uncompressed_size : (unsigned long long)0);
 
 		file_comment = get_file_comment(&archive, i);
 		if (file_comment) {
@@ -139,7 +139,7 @@ char get_command(const char *param) {
 	return cmd;
 }
 
-static const char *convert_comment(uint8_t *data, size_t size) {
+static const char *convert_comment(uint8_t *data, dmc_unrar_size_t size) {
 	const dmc_unrar_unicode_encoding encoding = dmc_unrar_unicode_detect_encoding(data, size);
 	if (encoding == DMC_UNRAR_UNICODE_ENCODING_UTF8) {
 		data[size] = '\0';
@@ -149,7 +149,7 @@ static const char *convert_comment(uint8_t *data, size_t size) {
 	if (encoding == DMC_UNRAR_UNICODE_ENCODING_UTF16LE) {
 		char *utf8_data = NULL;
 
-		size_t utf8_size = dmc_unrar_unicode_convert_utf16le_to_utf8(data, size, NULL, 0);
+		dmc_unrar_size_t utf8_size = dmc_unrar_unicode_convert_utf16le_to_utf8(data, size, NULL, 0);
 		if (utf8_size) {
 			utf8_data = (char *)malloc(utf8_size);
 			if (utf8_data) {
@@ -172,7 +172,7 @@ static const char *convert_comment(uint8_t *data, size_t size) {
 
 const char *get_archive_comment(dmc_unrar_archive *archive) {
 	uint8_t *data = NULL;
-	size_t size = dmc_unrar_get_archive_comment(archive, NULL, 0);
+	dmc_unrar_size_t size = dmc_unrar_get_archive_comment(archive, NULL, 0);
 	if (!size)
 		return NULL;
 
@@ -184,9 +184,9 @@ const char *get_archive_comment(dmc_unrar_archive *archive) {
 	return convert_comment(data, size);
 }
 
-const char *get_file_comment(dmc_unrar_archive *archive, size_t i) {
+const char *get_file_comment(dmc_unrar_archive *archive, dmc_unrar_size_t i) {
 	uint8_t *data = NULL;
-	size_t size = dmc_unrar_get_file_comment(archive, i, NULL, 0);
+	dmc_unrar_size_t size = dmc_unrar_get_file_comment(archive, i, NULL, 0);
 	if (!size)
 		return NULL;
 
@@ -198,9 +198,9 @@ const char *get_file_comment(dmc_unrar_archive *archive, size_t i) {
 	return convert_comment(data, size);
 }
 
-const char *get_filename(dmc_unrar_archive *archive, size_t i) {
+const char *get_filename(dmc_unrar_archive *archive, dmc_unrar_size_t i) {
 	char *filename = 0;
-	size_t size = dmc_unrar_get_filename(archive, i, NULL, 0);
+	dmc_unrar_size_t size = dmc_unrar_get_filename(archive, i, NULL, 0);
 	if (!size)
 		return NULL;
 
