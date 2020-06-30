@@ -94,6 +94,7 @@
  * - Added Win32 direct file access for future large file support
  * - Added a macro to optionally use fseeko/ftello for future large file
  *   support, by default used on 32-bit macOS and glibc builds
+ * - Replaced size_t with our own type to help with large file support
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -164,6 +165,18 @@
 #endif
 
 /* --- Library features --- */
+
+/* Unsigned type to use for file size. Needs to be at least 64-bit wide for
+ * dmc_unrar to support large files (>= 2GB). */
+#ifndef DMC_UNRAR_SIZE_T
+#define DMC_UNRAR_SIZE_T uint64_t
+#endif
+
+/* Signed type to use for file size. Needs to be at least 64-bit wide for
+ * dmc_unrar to support large files (>= 2GB). */
+#ifndef DMC_UNRAR_OFFSET_T
+#define DMC_UNRAR_OFFSET_T int64_t
+#endif
 
 /* Set DMC_UNRAR_DISABLE_MALLOC to 1 to disable all calls to malloc, realloc
  * and free. Note that if DMC_UNRAR_DISABLE_MALLOC is set to 1, the user must
@@ -304,6 +317,11 @@ typedef int bool;
 #include <stdio.h>
 #endif
 
+typedef DMC_UNRAR_SIZE_T dmc_unrar_size_t;
+typedef DMC_UNRAR_OFFSET_T dmc_unrar_offset_t;
+
+#define DMC_UNRAR_SIZE_MAX ((dmc_unrar_size_t)((dmc_unrar_offset_t)-1))
+
 /* --- System autodetection --- */
 
 /* Autodetecting whether we're on a 64-bit CPU. */
@@ -354,12 +372,12 @@ typedef int bool;
 /* --- API types and macros --- */
 
 /* Heap allocation functions. */
-typedef void *(*dmc_unrar_alloc_func)  (void *opaque, size_t items, size_t size);
-typedef void *(*dmc_unrar_realloc_func)(void *opaque, void *address, size_t items, size_t size);
+typedef void *(*dmc_unrar_alloc_func)  (void *opaque, dmc_unrar_size_t items, dmc_unrar_size_t size);
+typedef void *(*dmc_unrar_realloc_func)(void *opaque, void *address, dmc_unrar_size_t items, dmc_unrar_size_t size);
 typedef void  (*dmc_unrar_free_func)   (void *opaque, void *address);
 
-typedef size_t (*dmc_unrar_read_func)(void *opaque, void *buffer, size_t n);
-typedef int    (*dmc_unrar_seek_func)(void *opaque, uint64_t offset);
+typedef dmc_unrar_size_t (*dmc_unrar_read_func)(void *opaque, void *buffer, dmc_unrar_size_t n);
+typedef int              (*dmc_unrar_seek_func)(void *opaque, dmc_unrar_offset_t offset);
 
 /* --- Public unrar API --- */
 
@@ -558,16 +576,16 @@ typedef enum {
 typedef struct dmc_unrar_io_handler_tag {
 	void *(*open)(const char *path);
 	void (*close)(void *opaque);
-	size_t (*read)(void *opaque, void *buffer, size_t n);
-	bool (*seek)(void *opaque, int64_t offset, int origin);
-	int64_t (*tell)(void *opaque);
+	dmc_unrar_size_t (*read)(void *opaque, void *buffer, dmc_unrar_size_t n);
+	bool (*seek)(void *opaque, dmc_unrar_offset_t offset, int origin);
+	dmc_unrar_offset_t (*tell)(void *opaque);
 } dmc_unrar_io_handler;
 
 typedef struct dmc_unrar_io_tag {
 	dmc_unrar_io_handler *funcs; /**< RAR file management functions. Must not be NULL. */
 	void *opaque;                /**< Private data passed to funcs' pointers. */
 
-	uint64_t size;   /**< Size of the IO stream. */
+	dmc_unrar_size_t size;       /**< Size of the IO stream. */
 
 } dmc_unrar_io;
 
@@ -591,19 +609,19 @@ bool dmc_unrar_io_init(dmc_unrar_io *io, dmc_unrar_io_handler *handler, void *op
 void dmc_unrar_io_close(dmc_unrar_io *io);
 
 /** Read from an IO structure. */
-size_t dmc_unrar_io_read(dmc_unrar_io *io, void *buffer, size_t n);
+dmc_unrar_size_t dmc_unrar_io_read(dmc_unrar_io *io, void *buffer, dmc_unrar_size_t n);
 
 /** Seek in an IO structure. */
-bool dmc_unrar_io_seek(dmc_unrar_io *io, int64_t offset, int origin);
+bool dmc_unrar_io_seek(dmc_unrar_io *io, dmc_unrar_offset_t offset, int origin);
 
 /** Get the position in an IO structure. */
-int64_t dmc_unrar_io_tell(dmc_unrar_io *io);
+dmc_unrar_offset_t dmc_unrar_io_tell(dmc_unrar_io *io);
 
 /** Detect whether an IO structure contains a RAR archive. */
 bool dmc_unrar_is_rar(dmc_unrar_io *io);
 
 /** Detect whether the memory region contains a RAR archive. */
-bool dmc_unrar_is_rar_mem(const void *mem, size_t size);
+bool dmc_unrar_is_rar_mem(const void *mem, dmc_unrar_size_t size);
 
 #if DMC_UNRAR_DISABLE_STDIO != 1
 /* Detect whether this FILE contains a RAR archive. */
@@ -653,7 +671,7 @@ dmc_unrar_return dmc_unrar_archive_open(dmc_unrar_archive *archive);
  *          describes an error condition.
  */
 dmc_unrar_return dmc_unrar_archive_open_mem(dmc_unrar_archive *archive,
-	const void *mem, size_t size);
+	const void *mem, dmc_unrar_size_t size);
 
 #if DMC_UNRAR_DISABLE_STDIO != 1
 /** Open this RAR archive from a stdio FILE, reading its block and file headers.
@@ -714,14 +732,15 @@ void dmc_unrar_archive_close(dmc_unrar_archive *archive);
  *  Returns the number of bytes written to comment. If comment is NULL, this function
  *  returns the number of bytes needed to fully store the comment.
  */
-size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment, size_t comment_size);
+dmc_unrar_size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment,
+	dmc_unrar_size_t comment_size);
 
 /** Return the number of file entries in this RAR archive. */
-size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive);
+dmc_unrar_size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive);
 
 /** Return the detailed information about a file entry, or NULL on error.
  *  Does not need to be free'd. */
-const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index);
+const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, dmc_unrar_size_t index);
 
 /** Get the filename of a RAR file entry, UTF-8 encoded and \0-terminated.
  *
@@ -732,20 +751,20 @@ const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t
  *  Returns the number of bytes written to filename. If filename is NULL, this function
  *  returns the number of bytes needed to fully store the filename.
  */
-size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
-	char *filename, size_t filename_size);
+dmc_unrar_size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	char *filename, dmc_unrar_size_t filename_size);
 
 /** Is this file entry a directory? */
-bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index);
+bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, dmc_unrar_size_t index);
 
 /** Does this file entry have a comment attached? */
-bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, size_t index);
+bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, dmc_unrar_size_t index);
 
 /** Check if we support extracted this file entry.
  *
  *  If we do support extracting this file entry, DMC_UNRAR_OK is returned.
  *  Otherwise, the return code gives an idea why we don't have support. */
-dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t index);
+dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, dmc_unrar_size_t index);
 
 /** Get the comment of a file entry.
  *
@@ -763,8 +782,8 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t 
  *  Returns the number of bytes written to comment. If comment is NULL, this function
  *  returns the number of bytes needed to fully store the comment.
  */
-size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
-	void *comment, size_t comment_size);
+dmc_unrar_size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	void *comment, dmc_unrar_size_t comment_size);
 
 /** Extract a file entry into a pre-allocated memory buffer.
  *
@@ -779,8 +798,8 @@ size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
  *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
  *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
  */
-dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_t index,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc);
+dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, bool validate_crc);
 
 /** Extract a file entry into a dynamically allocated heap buffer.
  *
@@ -794,8 +813,8 @@ dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_
  *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
  *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
  */
-dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size_t index,
-	void **buffer, size_t *uncompressed_size, bool validate_crc);
+dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	void **buffer, dmc_unrar_size_t *uncompressed_size, bool validate_crc);
 
 /** The callback function for dmc_unrar_extract_file_with_callback().
  *
@@ -820,7 +839,7 @@ dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size
  *  @return true if extraction should continue, false otherwise.
  */
 typedef bool (*dmc_unrar_extract_callback_func)(void *opaque, void **buffer,
-	size_t *buffer_size, size_t uncompressed_size, dmc_unrar_return *err);
+	dmc_unrar_size_t *buffer_size, dmc_unrar_size_t uncompressed_size, dmc_unrar_return *err);
 
 /** Extract a file entry using a callback function.
  *
@@ -841,9 +860,10 @@ typedef bool (*dmc_unrar_extract_callback_func)(void *opaque, void **buffer,
  *  @param  callback The callback to call.
  *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
  */
-dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive, size_t index,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc,
-	void *opaque, dmc_unrar_extract_callback_func callback);
+dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive,
+	dmc_unrar_size_t index, void *buffer, dmc_unrar_size_t buffer_size,
+	dmc_unrar_size_t *uncompressed_size, bool validate_crc, void *opaque,
+	dmc_unrar_extract_callback_func callback);
 
 #if DMC_UNRAR_DISABLE_STDIO != 1
 /** Extract a file entry into a file.
@@ -858,8 +878,8 @@ dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive
  *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
  *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
  */
-dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size_t index,
-	FILE *file, size_t *uncompressed_size, bool validate_crc);
+dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	FILE *file, dmc_unrar_size_t *uncompressed_size, bool validate_crc);
 
 /** Open a file and extract a RAR file entry into it.
  *
@@ -877,8 +897,8 @@ dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size
  *          this counts as an error (DMC_UNRAR_FILE_CRC32_FAIL).
  *  @return An error condition, or DMC_UNRAR_OK if extraction succeeded.
  */
-dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size_t index,
-	const char *path, size_t *uncompressed_size, bool validate_crc);
+dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	const char *path, dmc_unrar_size_t *uncompressed_size, bool validate_crc);
 #endif /* DMC_UNRAR_DISABLE_STDIO */
 
 /** Return true if the given \0-terminated string contains valid UTF-8 data. */
@@ -906,7 +926,8 @@ typedef enum {
  *
  *  This function does not check for \0-termination.
  */
-dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, size_t data_size);
+dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data,
+	dmc_unrar_size_t data_size);
 
 /** Convert UTF-16LE data into UTF-8.
  *
@@ -921,11 +942,11 @@ dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, s
  *  Returns the number of bytes written to utf8_data. If utf8_data is NULL, this
  *  function returns the number of bytes needed to fully store the UTF-8 string.
  */
-size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data, size_t utf16le_size,
-	char *utf8_data, size_t utf8_size);
+dmc_unrar_size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data,
+	dmc_unrar_size_t utf16le_size, char *utf8_data, dmc_unrar_size_t utf8_size);
 
 /** Calculate a CRC-32 (0xEDB88320 polynomial) checksum from this memory region. */
-uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
+uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, dmc_unrar_size_t size);
 
 /** Append the CRC-32 (0xEDB88320 polynomial) checksum calculate from this memory region
   * to the CRC-32 of a previous memory region. The result is the CRC-32 of the two
@@ -933,19 +954,19 @@ uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size);
   *
   * I.e. these two functions will result in the same value:
   *
-  * uint32_t crc32_1(const uint8_t *mem, size_t size) {
+  * uint32_t crc32_1(const uint8_t *mem, dmc_unrar_size_t size) {
   *   assert(size >= 10);
   *   return dmc_unrar_crc32_calculate_from_mem(mem, size);
   * }
   *
-  * uint32_t crc32_2(const uint8_t *mem, size_t size) {
+  * uint32_t crc32_2(const uint8_t *mem, dmc_unrar_size_t size) {
   *   assert(size >= 10);
   *   uint32_t crc = dmc_unrar_crc32_calculate_from_mem(mem, 10);
   *   dmc_unrar_crc32_continue_from_mem(crc, mem + 10, size - 10);
   *   return crc;
   * }
   */
-uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, size_t size);
+uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, dmc_unrar_size_t size);
 #ifdef __cplusplus
 }
 #endif
@@ -1269,7 +1290,7 @@ struct dmc_unrar_file_block_tag;
 typedef struct dmc_unrar_file_block_tag dmc_unrar_file_block;
 
 struct dmc_unrar_file_block_tag {
-	size_t index; /** The index of this file within the files array. */
+	dmc_unrar_size_t index; /** The index of this file within the files array. */
 
 	uint64_t start_pos; /**< The offset within the file *after* the whole file block header. */
 
@@ -1306,26 +1327,26 @@ struct dmc_unrar_internal_state_tag {
 
 	dmc_unrar_block_header *comment; /**< Archive comments block. */
 
-	size_t block_count;             /**< Number of blocks in this RAR archive. */
-	dmc_unrar_block_header *blocks; /**< All blocks in this RAR archive. */
-	size_t block_capacity;          /**< Memory capacity of the blocks array. */
+	dmc_unrar_size_t block_count;    /**< Number of blocks in this RAR archive. */
+	dmc_unrar_block_header *blocks;  /**< All blocks in this RAR archive. */
+	dmc_unrar_size_t block_capacity; /**< Memory capacity of the blocks array. */
 
-	size_t file_count;           /**< Number of files (and directories) in this RAR archive. */
-	dmc_unrar_file_block *files; /**< All files (and directories) in this RAR archive. */
-	size_t file_capacity;        /**< Memory capacity of the files array. */
+	dmc_unrar_size_t file_count;    /**< Number of files (and directories) in this RAR archive. */
+	dmc_unrar_file_block *files;    /**< All files (and directories) in this RAR archive. */
+	dmc_unrar_size_t file_capacity; /**< Memory capacity of the files array. */
 
 	/** Saved unpack context, for sequential solid block unpacking. */
 	dmc_unrar_rar_context *unpack_context;
 };
 
 /* .--- Default allocation functions using malloc/realloc/free */
-static void *dmc_unrar_def_alloc_func(void *opaque, size_t items, size_t size) {
+static void *dmc_unrar_def_alloc_func(void *opaque, dmc_unrar_size_t items, dmc_unrar_size_t size) {
 	(void)opaque; (void)items; (void)size;
 
 	return DMC_UNRAR_MALLOC(items * size);
 }
 
-static void *dmc_unrar_def_realloc_func(void *opaque, void *address, size_t items, size_t size) {
+static void *dmc_unrar_def_realloc_func(void *opaque, void *address, dmc_unrar_size_t items, dmc_unrar_size_t size) {
 	(void)opaque; (void)address; (void)items; (void)size;
 	return DMC_UNRAR_REALLOC(address, items * size);
 }
@@ -1337,13 +1358,13 @@ static void dmc_unrar_def_free_func(void *opaque, void *address) {
 /* '--- */
 
 /* .--- Convenience allocation functions */
-static void *dmc_unrar_malloc(dmc_unrar_alloc *alloc, size_t items, size_t size) {
+static void *dmc_unrar_malloc(dmc_unrar_alloc *alloc, dmc_unrar_size_t items, dmc_unrar_size_t size) {
 	DMC_UNRAR_ASSERT(alloc && alloc->func_alloc);
 
 	return alloc->func_alloc(alloc->opaque, items, size);
 }
 
-static void *dmc_unrar_realloc(dmc_unrar_alloc *alloc, void *address, size_t items, size_t size) {
+static void *dmc_unrar_realloc(dmc_unrar_alloc *alloc, void *address, dmc_unrar_size_t items, dmc_unrar_size_t size) {
 	DMC_UNRAR_ASSERT(alloc && alloc->func_realloc);
 
 	return alloc->func_realloc(alloc->opaque, address, items, size);
@@ -1366,21 +1387,21 @@ static void dmc_unrar_io_dummy_close_func(void *opaque) {
 	(void)opaque;
 }
 
-static size_t dmc_unrar_io_dummy_read_func(void *opaque, void *buffer, size_t n) {
+static dmc_unrar_size_t dmc_unrar_io_dummy_read_func(void *opaque, void *buffer, dmc_unrar_size_t n) {
 	(void)opaque;
 	(void)buffer;
 	(void)n;
 	return 0;
 }
 
-static bool dmc_unrar_io_dummy_seek_func(void *opaque, int64_t offset, int origin) {
+static bool dmc_unrar_io_dummy_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	(void)opaque;
 	(void)offset;
 	(void)origin;
 	return false;
 }
 
-static int64_t dmc_unrar_io_dummy_tell_func(void *opaque) {
+static dmc_unrar_offset_t dmc_unrar_io_dummy_tell_func(void *opaque) {
 	(void)opaque;
 	return -1;
 }
@@ -1415,7 +1436,7 @@ static void dmc_unrar_io_mem_close_func(void *opaque) {
 	dmc_unrar_free(mem->alloc, opaque);
 }
 
-static size_t dmc_unrar_io_mem_read_func(void *opaque, void *buffer, size_t n) {
+static dmc_unrar_size_t dmc_unrar_io_mem_read_func(void *opaque, void *buffer, dmc_unrar_size_t n) {
 	if (!opaque)
 		return 0;
 
@@ -1435,7 +1456,7 @@ static size_t dmc_unrar_io_mem_read_func(void *opaque, void *buffer, size_t n) {
 	return n;
 }
 
-static bool dmc_unrar_io_mem_seek_func(void *opaque, int64_t offset, int origin) {
+static bool dmc_unrar_io_mem_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
 		return false;
 
@@ -1456,7 +1477,7 @@ static bool dmc_unrar_io_mem_seek_func(void *opaque, int64_t offset, int origin)
 	return true;
 }
 
-static int64_t dmc_unrar_io_mem_tell_func(void *opaque) {
+static dmc_unrar_offset_t dmc_unrar_io_mem_tell_func(void *opaque) {
 	dmc_unrar_mem_reader *mem;
 
 	if (!opaque)
@@ -1475,7 +1496,7 @@ dmc_unrar_io_handler dmc_unrar_io_mem_handler = {
 };
 
 static bool dmc_unrar_io_init_mem_reader(dmc_unrar_io *io, dmc_unrar_mem_reader *mem_reader,
-		const void *mem, size_t size) {
+		const void *mem, dmc_unrar_size_t size) {
 
 	DMC_UNRAR_ASSERT(io && mem_reader && mem);
 
@@ -1495,9 +1516,9 @@ typedef struct dmc_unrar_sub_reader_tag {
 	uint64_t offset;
 } dmc_unrar_sub_reader;
 
-static size_t dmc_unrar_io_sub_read_func(void *opaque, void *buffer, size_t n) {
+static dmc_unrar_size_t dmc_unrar_io_sub_read_func(void *opaque, void *buffer, dmc_unrar_size_t n) {
 	dmc_unrar_sub_reader *sub;
-	size_t result;
+	dmc_unrar_size_t result;
 
 	if (!opaque)
 		return 0;
@@ -1514,7 +1535,7 @@ static size_t dmc_unrar_io_sub_read_func(void *opaque, void *buffer, size_t n) {
 	return result;
 }
 
-static bool dmc_unrar_io_sub_seek_func(void *opaque, int64_t offset, int origin) {
+static bool dmc_unrar_io_sub_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	dmc_unrar_sub_reader *sub;
 
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
@@ -1536,7 +1557,7 @@ static bool dmc_unrar_io_sub_seek_func(void *opaque, int64_t offset, int origin)
 	return true;
 }
 
-static int64_t dmc_unrar_io_sub_tell_func(void *opaque) {
+static dmc_unrar_offset_t dmc_unrar_io_sub_tell_func(void *opaque) {
 	dmc_unrar_sub_reader *sub;
 
 	if (!opaque)
@@ -1581,11 +1602,11 @@ static void dmc_unrar_io_stdio_close_func(void *opaque) {
 	fclose((FILE *)opaque);
 }
 
-static size_t dmc_unrar_io_stdio_read_func(void *opaque, void *buffer, size_t n) {
+static dmc_unrar_size_t dmc_unrar_io_stdio_read_func(void *opaque, void *buffer, dmc_unrar_size_t n) {
 	return fread(buffer, 1, n, (FILE *)opaque);
 }
 
-static bool dmc_unrar_io_stdio_seek_func(void *opaque, int64_t offset, int origin) {
+static bool dmc_unrar_io_stdio_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 #if DMC_UNRAR_USE_FSEEKO_FTELLO == 1
 	return fseeko((FILE *)opaque, offset, origin) == 0;
 #else
@@ -1593,7 +1614,7 @@ static bool dmc_unrar_io_stdio_seek_func(void *opaque, int64_t offset, int origi
 #endif
 }
 
-static int64_t dmc_unrar_io_stdio_tell_func(void *opaque) {
+static dmc_unrar_offset_t dmc_unrar_io_stdio_tell_func(void *opaque) {
 #if DMC_UNRAR_USE_FSEEKO_FTELLO == 1
 	return ftello((FILE *)opaque);
 #else
@@ -1665,7 +1686,7 @@ static void dmc_unrar_io_win32_close_func(void *opaque) {
 		CloseHandle((HANDLE)opaque);
 }
 
-static size_t dmc_unrar_io_win32_read_func(void *opaque, void *buffer, size_t n) {
+static dmc_unrar_size_t dmc_unrar_io_win32_read_func(void *opaque, void *buffer, dmc_unrar_size_t n) {
 	DWORD bytes_read;
 	BOOL result;
 
@@ -1679,13 +1700,13 @@ static size_t dmc_unrar_io_win32_read_func(void *opaque, void *buffer, size_t n)
 	return bytes_read;
 }
 
-static bool dmc_unrar_io_win32_seek_func(void *opaque, int64_t offset, int origin) {
+static bool dmc_unrar_io_win32_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	LARGE_INTEGER offset_large;
 	offset_large.QuadPart = offset;
 	return SetFilePointerEx((HANDLE)opaque, offset_large, NULL, origin) != 0;
 }
 
-static int64_t dmc_unrar_io_win32_tell_func(void *opaque) {
+static dmc_unrar_offset_t dmc_unrar_io_win32_tell_func(void *opaque) {
 	LARGE_INTEGER offset, cur_pos;
 	cur_pos.QuadPart = 0;
 	SetFilePointerEx((HANDLE)opaque, cur_pos, &offset, FILE_CURRENT);
@@ -1723,7 +1744,7 @@ static uint32_t dmc_unrar_get_uint32le(const uint8_t *data) {
 	                   data[0];
 }
 
-static bool dmc_unrar_io_read_checked(dmc_unrar_io *io, void *buffer, size_t n) {
+static bool dmc_unrar_io_read_checked(dmc_unrar_io *io, void *buffer, dmc_unrar_size_t n) {
 	return dmc_unrar_io_read(io, buffer, n) == n;
 }
 
@@ -1761,7 +1782,8 @@ static dmc_unrar_return dmc_unrar_rar_context_create(dmc_unrar_rar_context *ctx,
 static void dmc_unrar_rar_context_destroy(dmc_unrar_rar_context *ctx);
 
 static dmc_unrar_return dmc_unrar_rar_context_init(dmc_unrar_rar_context *ctx,
-	dmc_unrar_archive *archive, dmc_unrar_file_block *file, void *buffer, size_t buffer_size);
+	dmc_unrar_archive *archive, dmc_unrar_file_block *file,
+	void *buffer, dmc_unrar_size_t buffer_size);
 
 static bool dmc_unrar_rar_context_check(dmc_unrar_rar_context *ctx,
 	dmc_unrar_archive *archive, dmc_unrar_file_block *file, dmc_unrar_return *return_code);
@@ -1771,8 +1793,8 @@ static bool dmc_unrar_rar_context_file_match(dmc_unrar_rar_context *ctx,
 
 static dmc_unrar_return dmc_unrar_rar_context_unpack(dmc_unrar_rar_context *ctx,
 	dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
-	void *opaque, dmc_unrar_extract_callback_func callback);
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size,
+	uint32_t *crc, void *opaque, dmc_unrar_extract_callback_func callback);
 /* '--- */
 
 /* .--- Opening/closing a RAR archive */
@@ -1780,7 +1802,7 @@ static int dmc_unrar_identify_generation(dmc_unrar_io *io);
 static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archive);
 
 bool dmc_unrar_io_init(dmc_unrar_io *io, dmc_unrar_io_handler *handler, void *opaque) {
-	int64_t start_offset;
+	dmc_unrar_offset_t start_offset;
 	DMC_UNRAR_ASSERT(io);
 
 	if (!handler || !opaque)
@@ -1796,7 +1818,7 @@ bool dmc_unrar_io_init(dmc_unrar_io *io, dmc_unrar_io_handler *handler, void *op
 		return false;
 
 	io->size = io->funcs->tell(opaque);
-	if (io->size == (uint64_t)-1)
+	if (io->size == DMC_UNRAR_SIZE_MAX)
 		return false;
 
 	/* Seek back to where we were */
@@ -1811,17 +1833,17 @@ void dmc_unrar_io_close(dmc_unrar_io *io) {
 	io->funcs->close(io->opaque);
 }
 
-size_t dmc_unrar_io_read(dmc_unrar_io *io, void *buffer, size_t n) {
+dmc_unrar_size_t dmc_unrar_io_read(dmc_unrar_io *io, void *buffer, dmc_unrar_size_t n) {
 	DMC_UNRAR_ASSERT(io);
 	return io->funcs->read(io->opaque, buffer, n);
 }
 
-bool dmc_unrar_io_seek(dmc_unrar_io *io, int64_t offset, int origin) {
+bool dmc_unrar_io_seek(dmc_unrar_io *io, dmc_unrar_offset_t offset, int origin) {
 	DMC_UNRAR_ASSERT(io);
 	return io->funcs->seek(io->opaque, offset, origin);
 }
 
-int64_t dmc_unrar_io_tell(dmc_unrar_io *io) {
+dmc_unrar_offset_t dmc_unrar_io_tell(dmc_unrar_io *io) {
 	DMC_UNRAR_ASSERT(io);
 	return io->funcs->tell(io->opaque);
 }
@@ -1836,7 +1858,7 @@ bool dmc_unrar_is_rar(dmc_unrar_io *io) {
 	return generation > (int)DMC_UNRAR_GENERATION_INVALID;
 }
 
-bool dmc_unrar_is_rar_mem(const void *mem, size_t size) {
+bool dmc_unrar_is_rar_mem(const void *mem, dmc_unrar_size_t size) {
 	dmc_unrar_mem_reader mem_reader;
 	dmc_unrar_io io;
 
@@ -1951,7 +1973,7 @@ dmc_unrar_return dmc_unrar_archive_open(dmc_unrar_archive *archive) {
 }
 
 dmc_unrar_return dmc_unrar_archive_open_mem(dmc_unrar_archive *archive,
-		const void *mem, size_t size) {
+		const void *mem, dmc_unrar_size_t size) {
 
 	/* Sanity checks. */
 	if (!archive)
@@ -2169,8 +2191,8 @@ static dmc_unrar_return dmc_unrar_archive_open_internal(dmc_unrar_archive *archi
 /* '--- */
 
 /* .--- RAR generation */
-static void *dmc_unrar_memmem(const void *haystack, size_t haystack_size,
-                              const void *needle, size_t needle_size) {
+static void *dmc_unrar_memmem(const void *haystack, dmc_unrar_size_t haystack_size,
+                              const void *needle, dmc_unrar_size_t needle_size) {
 
 	char *cur, *last;
 	const char *haystack_char = (const char *)haystack;
@@ -2200,12 +2222,12 @@ static void *dmc_unrar_memmem(const void *haystack, size_t haystack_size,
 
 typedef struct dmc_unrar_magic_tag {
 	const void *magic;
-	size_t size;
+	dmc_unrar_size_t size;
 	dmc_unrar_generation gen;
 
 } dmc_unrar_magic;
 
-static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t buffer_size, int64_t *offset) {
+static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_offset_t *offset) {
 	static const uint8_t DMC_UNRAR_MAGIC_13[] = { 0x52, 0x45, 0x7E, 0x5E };
 	static const uint8_t DMC_UNRAR_MAGIC_15[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00 };
 	static const uint8_t DMC_UNRAR_MAGIC_50[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00 };
@@ -2216,7 +2238,7 @@ static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t bu
 		{ DMC_UNRAR_MAGIC_13, DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGIC_13), DMC_UNRAR_GENERATION_ANCIENT }
 	};
 
-	size_t i;
+	dmc_unrar_size_t i;
 	for (i = 0; i < DMC_UNRAR_ARRAYSIZE(DMC_UNRAR_MAGICS); i++) {
 		const uint8_t *found = (const uint8_t *)dmc_unrar_memmem(buffer, buffer_size,
 		                       DMC_UNRAR_MAGICS[i].magic, DMC_UNRAR_MAGICS[i].size);
@@ -2233,7 +2255,7 @@ static dmc_unrar_generation dmc_unrar_find_generation(uint8_t *buffer, size_t bu
 
 /** Identify a RAR file generation by its magic number. */
 static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
-	size_t buffer_size, read_count;
+	dmc_unrar_size_t buffer_size, read_count;
 	uint8_t buffer[4096];
 
 	DMC_UNRAR_ASSERT(io);
@@ -2245,7 +2267,7 @@ static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
 	buffer_size = read_count;
 
 	while (read_count != 0) {
-		int64_t offset;
+		dmc_unrar_offset_t offset;
 		dmc_unrar_generation gen = dmc_unrar_find_generation(buffer, buffer_size, &offset);
 
 		if (gen != DMC_UNRAR_GENERATION_INVALID) {
@@ -2256,7 +2278,7 @@ static int dmc_unrar_identify_generation(dmc_unrar_io *io) {
 		}
 
 		{
-			size_t to_copy = DMC_UNRAR_MIN(8, buffer_size);
+			dmc_unrar_size_t to_copy = DMC_UNRAR_MIN(8, buffer_size);
 			memmove(buffer, buffer + buffer_size - to_copy, to_copy);
 
 			buffer_size = to_copy;
@@ -2288,7 +2310,7 @@ static bool dmc_unrar_init_internal_blocks(dmc_unrar_archive *archive) {
 /** Make sure we have enough space in the blocks array for one more block. */
 static bool dmc_unrar_ensure_block_capacity(dmc_unrar_archive *archive) {
 	dmc_unrar_block_header *new_blocks;
-	size_t new_capacity;
+	dmc_unrar_size_t new_capacity;
 
 	if (archive->internal_state->block_count < archive->internal_state->block_capacity)
 		return true;
@@ -2331,7 +2353,7 @@ static bool dmc_unrar_init_internal_files(dmc_unrar_archive *archive) {
 /** Make sure we have enough space in the files array for one more files. */
 static bool dmc_unrar_ensure_file_capacity(dmc_unrar_archive *archive) {
 	dmc_unrar_file_block *new_files;
-	size_t new_capacity;
+	dmc_unrar_size_t new_capacity;
 
 	if (archive->internal_state->file_count < archive->internal_state->file_capacity)
 		return true;
@@ -2375,7 +2397,7 @@ static void dmc_unrar_connect_solid(dmc_unrar_archive *archive) {
 	dmc_unrar_internal_state *state = archive->internal_state;
 	dmc_unrar_file_block *file = NULL, *start = NULL, *prev = NULL;
 
-	size_t i;
+	dmc_unrar_size_t i;
 	for (i = 0, file = state->files; i < state->file_count; i++, file++) {
 		if (!file->is_solid) {
 			file->solid_start = file;
@@ -2404,7 +2426,7 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 	dmc_unrar_internal_state *state = archive->internal_state;
 	state->archive_flags = 0;
 
-	while (dmc_unrar_io_tell(&archive->io) < (int64_t)archive->io.size) {
+	while (dmc_unrar_io_tell(&archive->io) < (dmc_unrar_offset_t)archive->io.size) {
 		/* One more block. */
 		if (!dmc_unrar_grow_blocks(archive))
 			return DMC_UNRAR_ALLOC_FAIL;
@@ -2794,7 +2816,7 @@ static dmc_unrar_return dmc_unrar_rar5_read_service_block(dmc_unrar_archive *arc
 static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive) {
 	dmc_unrar_internal_state *state = archive->internal_state;
 
-	while (dmc_unrar_io_tell(&archive->io) < (int64_t)archive->io.size) {
+	while (dmc_unrar_io_tell(&archive->io) < (dmc_unrar_offset_t)archive->io.size) {
 		/* One more block. */
 		if (!dmc_unrar_grow_blocks(archive))
 			return DMC_UNRAR_ALLOC_FAIL;
@@ -3071,7 +3093,7 @@ static bool dmc_unrar_unicode_utf32_is_valid(uint32_t code) {
 	return (code <= DMC_UNRAR_UNICODE_CODEPOINT_MAX) && !dmc_unrar_unicode_utf16_is_surrogate(code);
 }
 
-static bool dmc_unrar_unicode_utf32_is_overlong(uint32_t code, size_t length) {
+static bool dmc_unrar_unicode_utf32_is_overlong(uint32_t code, dmc_unrar_size_t length) {
 	if (code < 0x00080)
 		return length != 1;
 
@@ -3085,7 +3107,7 @@ static bool dmc_unrar_unicode_utf32_is_overlong(uint32_t code, size_t length) {
 }
 
 /** Return the number of octets the Unicode codepoint takes as a UTF-8 code unit. */
-static size_t dmc_unrar_unicode_utf8_get_octet_count(uint32_t code) {
+static dmc_unrar_size_t dmc_unrar_unicode_utf8_get_octet_count(uint32_t code) {
 	if (!dmc_unrar_unicode_utf32_is_valid(code))
 		return 0;
 
@@ -3102,7 +3124,7 @@ static size_t dmc_unrar_unicode_utf8_get_octet_count(uint32_t code) {
 }
 
 /** Determine the length of an UTF-8 sequence by its first octet. */
-static size_t dmc_unrar_unicode_utf8_get_sequence_length(const uint8_t *data) {
+static dmc_unrar_size_t dmc_unrar_unicode_utf8_get_sequence_length(const uint8_t *data) {
 	if (!data)
 		return 0;
 
@@ -3119,7 +3141,7 @@ static size_t dmc_unrar_unicode_utf8_get_sequence_length(const uint8_t *data) {
 }
 
 /** Do we have enough space in this \0-terminated string for n UTF-8 octets? */
-static bool dmc_unrar_unicode_utf8_has_space(const uint8_t *str, size_t n) {
+static bool dmc_unrar_unicode_utf8_has_space(const uint8_t *str, dmc_unrar_size_t n) {
 	if (!str)
 		return false;
 
@@ -3158,7 +3180,7 @@ static bool dmc_unrar_unicode_utf8_put(uint8_t *data, uint32_t code) {
 }
 
 /** Read a UTF-8 sequence of length bytes. */
-static uint32_t dmc_unrar_unicode_utf8_get_sequence(const uint8_t *data, size_t length) {
+static uint32_t dmc_unrar_unicode_utf8_get_sequence(const uint8_t *data, dmc_unrar_size_t length) {
 	uint32_t codepoint = 0;
 
 	switch (length) {
@@ -3193,12 +3215,12 @@ static uint32_t dmc_unrar_unicode_utf8_get_sequence(const uint8_t *data, size_t 
 
 /* Read a UTF-8 sequence as a Unicode codepoint out of the buffer and return
  * the length of the UTF-8 sequence in bytes. */
-static size_t dmc_unrar_unicode_utf8_get(const uint8_t *data, uint32_t *codepoint) {
+static dmc_unrar_size_t dmc_unrar_unicode_utf8_get(const uint8_t *data, uint32_t *codepoint) {
 	if (!data || !codepoint)
 		return 0;
 
 	{
-		const size_t length = dmc_unrar_unicode_utf8_get_sequence_length(data);
+		const dmc_unrar_size_t length = dmc_unrar_unicode_utf8_get_sequence_length(data);
 
 		if (!length || !dmc_unrar_unicode_utf8_has_space(data, length))
 			return 0;
@@ -3234,19 +3256,19 @@ static const void *dmc_unrar_unicode_advance_uint8(const void *opaque) {
 }
 
 /** Convert a whole UTF-16 string into UTF-8. */
-static bool dmc_unrar_unicode_utf16_to_utf8(const void *utf16_data, size_t utf16_size,
-	char *utf8_data, size_t utf8_size, size_t *out_size,
+static bool dmc_unrar_unicode_utf16_to_utf8(const void *utf16_data, dmc_unrar_size_t utf16_size,
+	char *utf8_data, dmc_unrar_size_t utf8_size, dmc_unrar_size_t *out_size,
 	dmc_unrar_unicode_read_uint16le_func read_func,
 	dmc_unrar_unicode_advance_uint16le advance_func) {
 
-	size_t i;
+	dmc_unrar_size_t i;
 
 	if (out_size)
 		*out_size = 0;
 
 	for (i = 0; i < utf16_size; i += 2, utf16_data = advance_func(utf16_data)) {
 		uint32_t codepoint = read_func(utf16_data);
-		size_t length;
+		dmc_unrar_size_t length;
 
 		if (dmc_unrar_unicode_utf16_is_lead_surrogate(codepoint)) {
 			uint16_t trail;
@@ -3292,10 +3314,10 @@ static bool dmc_unrar_unicode_utf16_to_utf8(const void *utf16_data, size_t utf16
 	return true;
 }
 
-static const char *dmc_unrar_utf8_get_first_invalid(const char *str, size_t size) {
+static const char *dmc_unrar_utf8_get_first_invalid(const char *str, dmc_unrar_size_t size) {
 	while ((size > 0) && *str) {
 		uint32_t codepoint;
-		const size_t length = dmc_unrar_unicode_utf8_get((const uint8_t *)str, &codepoint);
+		const dmc_unrar_size_t length = dmc_unrar_unicode_utf8_get((const uint8_t *)str, &codepoint);
 
 		if (!length || (length > size))
 			return str;
@@ -3315,7 +3337,7 @@ bool dmc_unrar_unicode_is_valid_utf8(const char *str) {
 	if (!str)
 		return false;
 
-	return dmc_unrar_utf8_get_first_invalid(str, SIZE_MAX) == NULL;
+	return dmc_unrar_utf8_get_first_invalid(str, DMC_UNRAR_SIZE_MAX) == NULL;
 }
 
 bool dmc_unrar_unicode_make_valid_utf8(char *str) {
@@ -3323,7 +3345,7 @@ bool dmc_unrar_unicode_make_valid_utf8(char *str) {
 		return false;
 
 	{
-		char *first_invalid = (char *)dmc_unrar_utf8_get_first_invalid(str, SIZE_MAX);
+		char *first_invalid = (char *)dmc_unrar_utf8_get_first_invalid(str, DMC_UNRAR_SIZE_MAX);
 		if (!first_invalid)
 			return false;
 
@@ -3333,10 +3355,10 @@ bool dmc_unrar_unicode_make_valid_utf8(char *str) {
 	return true;;
 }
 
-dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, size_t data_size) {
+dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, dmc_unrar_size_t data_size) {
 	const uint8_t *bytes = (const uint8_t *)data;
 	bool has_null = false;
-	size_t i;
+	dmc_unrar_size_t i;
 
 	if (!bytes || !data_size)
 		return DMC_UNRAR_UNICODE_ENCODING_UNKNOWN;
@@ -3357,15 +3379,15 @@ dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, s
 		if (dmc_unrar_utf8_get_first_invalid((const char *)bytes, data_size) == NULL)
 			return DMC_UNRAR_UNICODE_ENCODING_UTF8;
 
-	if (dmc_unrar_unicode_utf16_to_utf8(bytes, data_size, NULL, SIZE_MAX, NULL,
+	if (dmc_unrar_unicode_utf16_to_utf8(bytes, data_size, NULL, DMC_UNRAR_SIZE_MAX, NULL,
 	    &dmc_unrar_unicode_read_uint16le_from_uint8, &dmc_unrar_unicode_advance_uint8))
 		return DMC_UNRAR_UNICODE_ENCODING_UTF16LE;
 
 	return DMC_UNRAR_UNICODE_ENCODING_UNKNOWN;
 }
 
-size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data, size_t utf16le_size,
-	char *utf8_data, size_t utf8_size) {
+dmc_unrar_size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data, dmc_unrar_size_t utf16le_size,
+	char *utf8_data, dmc_unrar_size_t utf8_size) {
 
 	const uint8_t *bytes = (const uint8_t *)utf16le_data;
 
@@ -3381,7 +3403,7 @@ size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data, size_
 	}
 
 	if (!utf8_data) {
-		if (!dmc_unrar_unicode_utf16_to_utf8(bytes, utf16le_size, NULL, SIZE_MAX, &utf8_size,
+		if (!dmc_unrar_unicode_utf16_to_utf8(bytes, utf16le_size, NULL, DMC_UNRAR_SIZE_MAX, &utf8_size,
 		    &dmc_unrar_unicode_read_uint16le_from_uint8, &dmc_unrar_unicode_advance_uint8))
 			return 0;
 
@@ -3399,14 +3421,14 @@ size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_data, size_
 /* '--- */
 
 /* .--- Information about files in RAR archives */
-size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive) {
+dmc_unrar_size_t dmc_unrar_get_file_count(dmc_unrar_archive *archive) {
 	if (!archive || !archive->internal_state)
 		return 0;
 
 	return archive->internal_state->file_count;
 }
 
-static dmc_unrar_file_block *dmc_unrar_get_file(dmc_unrar_archive *archive, size_t index) {
+static dmc_unrar_file_block *dmc_unrar_get_file(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	if (!archive || !archive->internal_state)
 		return NULL;
 
@@ -3416,7 +3438,7 @@ static dmc_unrar_file_block *dmc_unrar_get_file(dmc_unrar_archive *archive, size
 	return &archive->internal_state->files[index];
 }
 
-const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t index) {
+const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	if (!file)
 		return NULL;
@@ -3426,8 +3448,8 @@ const dmc_unrar_file *dmc_unrar_get_file_stat(dmc_unrar_archive *archive, size_t
 
 #define DMC_UNRAR_FILENAME_MAX_LENGTH 512
 
-static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
-		uint16_t *name_utf16, size_t *name_utf16_length) {
+static bool dmc_unrar_get_filename_utf16(const uint8_t *data, dmc_unrar_size_t data_size,
+		uint16_t *name_utf16, dmc_unrar_size_t *name_utf16_length) {
 
 	/* Unicode filenames in RAR archives might be UTF-16 encoded, and then
 	 * compressed by remembering a common high byte value and some simple RLE.
@@ -3439,7 +3461,7 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 	 */
 
 	const uint8_t *utf16_data;
-	size_t utf16_data_begin = 0, utf16_data_length = 0, i;
+	dmc_unrar_size_t utf16_data_begin = 0, utf16_data_length = 0, i;
 
 	uint16_t high_byte;
 	int flag_byte = 0, flag_bits = 0;
@@ -3506,8 +3528,8 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 					utf16_data_length--;
 
 					with_correction = length & 0x80;
-					length = DMC_UNRAR_MIN((size_t) ((length & 0x7F) + 2),
-					                       (size_t) (DMC_UNRAR_FILENAME_MAX_LENGTH - *name_utf16_length));
+					length = DMC_UNRAR_MIN((dmc_unrar_size_t) ((length & 0x7F) + 2),
+					                       (dmc_unrar_size_t) (DMC_UNRAR_FILENAME_MAX_LENGTH - *name_utf16_length));
 
 					if (with_correction) {
 						/* With correction and common high byte. */
@@ -3533,9 +3555,9 @@ static bool dmc_unrar_get_filename_utf16(const uint8_t *data, size_t data_size,
 	return true;
 }
 
-static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t index) {
+static dmc_unrar_size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
-	size_t name_size;
+	dmc_unrar_size_t name_size;
 
 	if (!file)
 		return 0;
@@ -3568,14 +3590,14 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 
 		{
 			uint16_t name_utf16[DMC_UNRAR_FILENAME_MAX_LENGTH];
-			size_t utf16_length = 0;
+			dmc_unrar_size_t utf16_length = 0;
 
 			/* The name is not UTF-16 encoded, but UTF-8. We know the length then. */
 			if (!dmc_unrar_get_filename_utf16(name, name_size, name_utf16, &utf16_length))
 				return name_size + 1;
 
 			/* The name is UTF-16 encoded. Convert to UTF-8 to figure out the length. */
-			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length * 2, NULL, SIZE_MAX, &name_size,
+			if (!dmc_unrar_unicode_utf16_to_utf8(name_utf16, utf16_length * 2, NULL, DMC_UNRAR_SIZE_MAX, &name_size,
 			     &dmc_unrar_unicode_read_uint16le_from_uint16, &dmc_unrar_unicode_advance_uint16))
 				return 0;
 		}
@@ -3584,11 +3606,11 @@ static size_t dmc_unrar_get_filename_length(dmc_unrar_archive *archive, size_t i
 	return name_size + 1;
 }
 
-size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
-		char *filename, size_t filename_size) {
+dmc_unrar_size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+		char *filename, dmc_unrar_size_t filename_size) {
 
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
-	size_t name_size;
+	dmc_unrar_size_t name_size;
 
 	if (!file)
 		return 0;
@@ -3609,7 +3631,7 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 
 		uint8_t name_unicode[DMC_UNRAR_FILENAME_MAX_LENGTH];
 		uint16_t name_utf16[DMC_UNRAR_FILENAME_MAX_LENGTH];
-		size_t utf16_length = 0;
+		dmc_unrar_size_t utf16_length = 0;
 
 		if (name_size > DMC_UNRAR_FILENAME_MAX_LENGTH)
 			return 0;
@@ -3647,7 +3669,7 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 
 	/* Use portable path separators. */
 	{
-		size_t i;
+		dmc_unrar_size_t i;
 		for (i = 0; i < filename_size; i++)
 			if (filename[i] == '\\')
 				filename[i] = '/';
@@ -3657,10 +3679,10 @@ size_t dmc_unrar_get_filename(dmc_unrar_archive *archive, size_t index,
 }
 
 static dmc_unrar_return dmc_unrar_file_extract_mem_simple(dmc_unrar_archive *archive,
-	dmc_unrar_file_block *file, void *buffer, size_t buffer_size, size_t *uncompressed_size);
+	dmc_unrar_file_block *file, void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size);
 
 bool dmc_unrar_extract_callback_mem(void *opaque, void **buffer,
-	size_t *buffer_size, size_t uncompressed_size, dmc_unrar_return *err);
+	dmc_unrar_size_t *buffer_size, dmc_unrar_size_t uncompressed_size, dmc_unrar_return *err);
 
 static bool dmc_unrar_20_read_comment_file_at_position(dmc_unrar_archive *archive,
 		dmc_unrar_file_block *file) {
@@ -3741,7 +3763,7 @@ static bool dmc_unrar_50_read_comment_file(dmc_unrar_archive *archive, dmc_unrar
 	return true;
 }
 
-size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment, size_t comment_size) {
+dmc_unrar_size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment, dmc_unrar_size_t comment_size) {
 	dmc_unrar_block_header *block;
 	dmc_unrar_file_block comment_file;
 
@@ -3806,8 +3828,8 @@ size_t dmc_unrar_get_archive_comment(dmc_unrar_archive *archive, void *comment, 
 	return comment_size;
 }
 
-size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
-	void *comment, size_t comment_size) {
+dmc_unrar_size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	void *comment, dmc_unrar_size_t comment_size) {
 
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	dmc_unrar_file_block comment_file;
@@ -3846,7 +3868,7 @@ size_t dmc_unrar_get_file_comment(dmc_unrar_archive *archive, size_t index,
 	return comment_size;
 }
 
-bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index) {
+bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	if (!file)
 		return false;
@@ -3874,7 +3896,7 @@ bool dmc_unrar_file_is_directory(dmc_unrar_archive *archive, size_t index) {
 	return false;
 }
 
-bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, size_t index) {
+bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	dmc_unrar_file_block *file = dmc_unrar_get_file(archive, index);
 	if (!file)
 		return false;
@@ -3883,7 +3905,7 @@ bool dmc_unrar_file_has_comment(dmc_unrar_archive *archive, size_t index) {
 	       (file->flags & DMC_UNRAR_FLAG4_FILE_HASCOMMENT);
 }
 
-dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t index) {
+dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, dmc_unrar_size_t index) {
 	if (!archive || !archive->internal_state)
 		return DMC_UNRAR_ARCHIVE_IS_NULL;
 
@@ -3950,21 +3972,21 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, size_t 
 
 /* .--- Extracting file entries */
 bool dmc_unrar_extract_callback_mem(void *opaque, void **buffer,
-	size_t *buffer_size, size_t uncompressed_size, dmc_unrar_return *err) {
+	dmc_unrar_size_t *buffer_size, dmc_unrar_size_t uncompressed_size, dmc_unrar_return *err) {
 
 	(void)opaque; (void)buffer; (void)buffer_size; (void)uncompressed_size; (void)err;
 	return false;
 }
 
 static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 	void *opaque, dmc_unrar_extract_callback_func callback);
 
-dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive, size_t index,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc,
+dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, bool validate_crc,
 	void *opaque, dmc_unrar_extract_callback_func callback) {
 
-	size_t output_size = 0;
+	dmc_unrar_size_t output_size = 0;
 
 	if (!archive || !buffer)
 		return DMC_UNRAR_ARCHIVE_EMPTY;
@@ -4002,8 +4024,8 @@ dmc_unrar_return dmc_unrar_extract_file_with_callback(dmc_unrar_archive *archive
 	return DMC_UNRAR_OK;
 }
 
-dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_t index,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size, bool validate_crc) {
+dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+		void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, bool validate_crc) {
 	return
 		dmc_unrar_extract_file_with_callback(archive, index, buffer,
 		                                     buffer_size, uncompressed_size, validate_crc,
@@ -4011,8 +4033,8 @@ dmc_unrar_return dmc_unrar_extract_file_to_mem(dmc_unrar_archive *archive, size_
 }
 
 /** Extract a file entry into a dynamically allocated heap buffer. */
-dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size_t index,
-		void **buffer, size_t *uncompressed_size, bool validate_crc) {
+dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+		void **buffer, dmc_unrar_size_t *uncompressed_size, bool validate_crc) {
 
 	if (!buffer || !uncompressed_size)
 		return DMC_UNRAR_ARCHIVE_EMPTY;
@@ -4050,7 +4072,7 @@ dmc_unrar_return dmc_unrar_extract_file_to_heap(dmc_unrar_archive *archive, size
 
 #if DMC_UNRAR_DISABLE_STDIO != 1
 bool dmc_unrar_extract_callback_file(void *opaque, void **buffer,
-	size_t *buffer_size, size_t uncompressed_size, dmc_unrar_return *err) {
+	dmc_unrar_size_t *buffer_size, dmc_unrar_size_t uncompressed_size, dmc_unrar_return *err) {
 
 	FILE *file = (FILE *)opaque;
 	DMC_UNRAR_ASSERT(file);
@@ -4064,7 +4086,7 @@ bool dmc_unrar_extract_callback_file(void *opaque, void **buffer,
 	return true;
 }
 
-static dmc_unrar_return dmc_unrar_get_file_checked(dmc_unrar_archive *archive, size_t index,
+static dmc_unrar_return dmc_unrar_get_file_checked(dmc_unrar_archive *archive, dmc_unrar_size_t index,
 		dmc_unrar_file_block **file) {
 
 	const dmc_unrar_return is_supported = dmc_unrar_file_is_supported(archive, index);
@@ -4079,8 +4101,8 @@ static dmc_unrar_return dmc_unrar_get_file_checked(dmc_unrar_archive *archive, s
 	return DMC_UNRAR_OK;
 }
 
-dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size_t index,
-	FILE *file, size_t *uncompressed_size, bool validate_crc) {
+dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	FILE *file, dmc_unrar_size_t *uncompressed_size, bool validate_crc) {
 
 	uint8_t buffer[4096];
 	dmc_unrar_file_block *file_entry = NULL;
@@ -4101,7 +4123,7 @@ dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size
 
 	{
 		uint32_t crc = 0;
-		size_t output_size;
+		dmc_unrar_size_t output_size;
 		dmc_unrar_return extracted;
 
 		extracted = dmc_unrar_file_extract(archive, file_entry, buffer, DMC_UNRAR_ARRAYSIZE(buffer),
@@ -4169,8 +4191,8 @@ end:
 
 #endif /* DMC_UNRAR_DISABLE_WIN32 */
 
-dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size_t index,
-	const char *path, size_t *uncompressed_size, bool validate_crc) {
+dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, dmc_unrar_size_t index,
+	const char *path, dmc_unrar_size_t *uncompressed_size, bool validate_crc) {
 
 	dmc_unrar_return return_code;
 	FILE *file;
@@ -4191,24 +4213,24 @@ dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size
 }
 #endif /* DMC_UNRAR_DISABLE_STDIO */
 
-typedef size_t (*dmc_unrar_extractor_func)(void *opaque, void *buffer, size_t buffer_size,
+typedef dmc_unrar_size_t (*dmc_unrar_extractor_func)(void *opaque, void *buffer, dmc_unrar_size_t buffer_size,
 	dmc_unrar_return *err);
 
 static dmc_unrar_return dmc_unrar_file_extract_with_callback_and_extractor(dmc_unrar_archive *archive,
-	dmc_unrar_file_block *file, void *buffer, size_t buffer_size, size_t *uncompressed_size,
+	dmc_unrar_file_block *file, void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size,
 	uint32_t *crc, void *opaque_callback, dmc_unrar_extract_callback_func callback,
 	void *opaque_extractor, dmc_unrar_extractor_func extractor);
 
 static dmc_unrar_return dmc_unrar_file_unstore(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 	void *opaque, dmc_unrar_extract_callback_func callback);
 static dmc_unrar_return dmc_unrar_file_unpack(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-	void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+	void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 	void *opaque, dmc_unrar_extract_callback_func callback);
 
 /** Internal function that calls the method-specific file extractors. */
 static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+		void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 		void *opaque, dmc_unrar_extract_callback_func callback) {
 
 	DMC_UNRAR_ASSERT(archive && file);
@@ -4234,11 +4256,11 @@ static dmc_unrar_return dmc_unrar_file_extract(dmc_unrar_archive *archive, dmc_u
 }
 
 static dmc_unrar_return dmc_unrar_file_extract_with_callback_and_extractor(dmc_unrar_archive *archive,
-		dmc_unrar_file_block *file, void *buffer, size_t buffer_size, size_t *uncompressed_size,
+		dmc_unrar_file_block *file, void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size,
 		uint32_t *crc, void *opaque_callback, dmc_unrar_extract_callback_func callback,
 		void *opaque_extractor, dmc_unrar_extractor_func extractor) {
 
-	size_t total_size;
+	dmc_unrar_size_t total_size;
 	bool buffer_allocated = false, finished = false;
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
@@ -4251,7 +4273,7 @@ static dmc_unrar_return dmc_unrar_file_extract_with_callback_and_extractor(dmc_u
 	total_size = file->file.uncompressed_size;
 	while (!finished && (total_size > 0) && (buffer_size > 0)) {
 		void *old_buffer;
-		size_t old_buffer_size, read_size;
+		dmc_unrar_size_t old_buffer_size, read_size;
 
 		if (!buffer) {
 			buffer_allocated = true;
@@ -4290,7 +4312,7 @@ static dmc_unrar_return dmc_unrar_file_extract_with_callback_and_extractor(dmc_u
 	return return_code;
 }
 
-static size_t dmc_unrar_extractor_unstore(void *opaque, void *buffer, size_t buffer_size,
+static dmc_unrar_size_t dmc_unrar_extractor_unstore(void *opaque, void *buffer, dmc_unrar_size_t buffer_size,
 		dmc_unrar_return *err) {
 
 	(void)err;
@@ -4299,7 +4321,7 @@ static size_t dmc_unrar_extractor_unstore(void *opaque, void *buffer, size_t buf
 
 /** Extract an uncompressed (stored) file. */
 static dmc_unrar_return dmc_unrar_file_unstore(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+		void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 		void *opaque, dmc_unrar_extract_callback_func callback) {
 
 	DMC_UNRAR_ASSERT(archive && archive->internal_state && file && crc);
@@ -4324,7 +4346,7 @@ static dmc_unrar_return dmc_unrar_rar50_create(dmc_unrar_rar_context *ctx,
 
 /** Extract a compressed file. */
 static dmc_unrar_return dmc_unrar_file_unpack(dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+		void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 		void *opaque, dmc_unrar_extract_callback_func callback) {
 
 	dmc_unrar_return return_code;
@@ -4362,7 +4384,7 @@ static dmc_unrar_return dmc_unrar_file_unpack(dmc_unrar_archive *archive, dmc_un
 }
 
 static dmc_unrar_return dmc_unrar_file_extract_mem_simple(dmc_unrar_archive *archive,
-		dmc_unrar_file_block *file, void *buffer, size_t buffer_size, size_t *uncompressed_size) {
+		dmc_unrar_file_block *file, void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size) {
 
 	uint32_t crc;
 	return dmc_unrar_file_extract(archive, file, buffer, buffer_size, uncompressed_size, &crc,
@@ -4392,19 +4414,19 @@ typedef struct dmc_unrar_bs_tag {
 	 *  fit in an L1 cache line, so we use this variable to know whether or not the
 	 *  bistreamer needs to run on a slower path to read those last bytes. This will
 	 *  never be more than sizeof(dmc_unrar_bs_cache_t). */
-	size_t unaligned_byte_count;
+	dmc_unrar_size_t unaligned_byte_count;
 
 	/** The content of the unaligned bytes. */
 	dmc_unrar_bs_cache_t unaligned_cache;
 
 	/** The index of the next valid cache line in the "L2" cache. */
-	size_t next_l2_line;
+	dmc_unrar_size_t next_l2_line;
 
 	/** The number of bits that have been consumed by the cache. */
-	size_t consumed_bits;
+	dmc_unrar_size_t consumed_bits;
 
 	/** Offset within the bitstream, in bits. */
-	size_t offset_bits;
+	dmc_unrar_size_t offset_bits;
 
 	/** The cached data which was most recently read from the client.
 	 *
@@ -4428,19 +4450,19 @@ static bool dmc_unrar_bs_has_error(dmc_unrar_bs *bs);
 static bool dmc_unrar_bs_eos(dmc_unrar_bs *bs);
 
 /** Do we have at least this number of bits left in the bitstream? */
-static bool dmc_unrar_bs_has_at_least(dmc_unrar_bs *bs, size_t n);
+static bool dmc_unrar_bs_has_at_least(dmc_unrar_bs *bs, dmc_unrar_size_t n);
 
 /** Skip this amount of bits. */
-static bool dmc_unrar_bs_skip_bits(dmc_unrar_bs *bs, size_t n);
+static bool dmc_unrar_bs_skip_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n);
 
 /** Skip as many bits are necessary to align the reading position to a byte boundary. */
 static bool dmc_unrar_bs_skip_to_byte_boundary(dmc_unrar_bs *bs);
 
 /** Read this amount of bits, consuming them. */
-static uint32_t dmc_unrar_bs_read_bits(dmc_unrar_bs *bs, size_t n);
+static uint32_t dmc_unrar_bs_read_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n);
 
 /** Peek this amount of bits, without consuming them. */
-static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, size_t n);
+static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n);
 /* '--- */
 
 /* .--- Huffman interface */
@@ -4448,22 +4470,22 @@ static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, size_t n);
 typedef struct dmc_unrar_huff_tag {
 	dmc_unrar_alloc *alloc;
 
-	size_t node_count; /**< Number of nodes in the decoder tree. */
-	uint32_t *tree;    /**< The decoder tree. */
+	dmc_unrar_size_t node_count; /**< Number of nodes in the decoder tree. */
+	uint32_t *tree;              /**< The decoder tree. */
 
-	size_t table_size; /**< Size of the decoder table. */
-	uint32_t *table;   /**< The decoder tree. */
+	dmc_unrar_size_t table_size; /**< Size of the decoder table. */
+	uint32_t *table;             /**< The decoder tree. */
 
 } dmc_unrar_huff;
 
 /** Create a Huffman decoder, allocating memory for its internal structures. */
 static dmc_unrar_return dmc_unrar_huff_create(dmc_unrar_alloc *alloc, dmc_unrar_huff *huff,
-	uint8_t max_length, size_t code_count, const uint32_t *codes, const uint8_t *lengths,
+	uint8_t max_length, dmc_unrar_size_t code_count, const uint32_t *codes, const uint8_t *lengths,
 	const uint32_t *symbols);
 
 /** Create a Huffman decoder, just from the code lengths array. */
 static dmc_unrar_return dmc_unrar_huff_create_from_lengths(dmc_unrar_alloc *alloc,
-	dmc_unrar_huff *huff, const uint8_t *lengths, size_t code_count, uint8_t max_length);
+	dmc_unrar_huff *huff, const uint8_t *lengths, dmc_unrar_size_t code_count, uint8_t max_length);
 
 /** Destroy a Huffman decoder, deallocating its internal memory. */
 static void dmc_unrar_huff_destroy(dmc_unrar_huff *huff);
@@ -4478,45 +4500,45 @@ static uint32_t dmc_unrar_huff_get_symbol(dmc_unrar_huff *huff,
 typedef struct dmc_unrar_lzss_tag {
 	dmc_unrar_alloc *alloc;
 
-	size_t window_size; /**< Size of the LSZZ window. */
-	size_t window_mask; /**< Mask to clamp an offset to the window. */
+	dmc_unrar_size_t window_size; /**< Size of the LSZZ window. */
+	dmc_unrar_size_t window_mask; /**< Mask to clamp an offset to the window. */
 
 	uint8_t *window; /**< The LZSS window. */
 
-	size_t window_offset; /**< Current offset into the window. */
+	dmc_unrar_size_t window_offset; /**< Current offset into the window. */
 
-	size_t copy_offset; /**< Overhang copy offset. */
-	size_t copy_size;   /**< Overhang copy size. */
+	dmc_unrar_size_t copy_offset; /**< Overhang copy offset. */
+	dmc_unrar_size_t copy_size;   /**< Overhang copy size. */
 
 } dmc_unrar_lzss;
 
 /** Create an LZSS decoder, allocating a window buffer of the specified size (must be a power of 2!). */
 static dmc_unrar_return dmc_unrar_lzss_create(dmc_unrar_alloc *alloc, dmc_unrar_lzss *lzss,
-	size_t window_size);
+	dmc_unrar_size_t window_size);
 
 /** Destroy an LZSS decoder, deallocating its internal memory. */
 static void dmc_unrar_lzss_destroy(dmc_unrar_lzss *lzss);
 
 /** Emit a literal byte into the buffer and the LZSS window. */
-static size_t dmc_unrar_lzss_emit_literal(dmc_unrar_lzss *lzss, uint8_t *buffer,
-	size_t buffer_size, size_t buffer_offset, uint8_t literal, size_t *running_output_count);
+static dmc_unrar_size_t dmc_unrar_lzss_emit_literal(dmc_unrar_lzss *lzss, uint8_t *buffer,
+	dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, uint8_t literal, dmc_unrar_size_t *running_output_count);
 
 /** Emit a copy from the LZSS window into the buffer (and back into the LZSS window).
  *
  *  If the buffer runs out before copy_size bytes have been copied, the
  *  remainder is saved as an overhang. Emitting this overhang can be
  *  continued with dmc_unrar_lzss_emit_copy_overhang(). */
-static size_t dmc_unrar_lzss_emit_copy(dmc_unrar_lzss *lzss, uint8_t *buffer,
-	size_t buffer_size, size_t buffer_offset, size_t copy_offset, size_t copy_size,
-	size_t *running_output_count);
+static dmc_unrar_size_t dmc_unrar_lzss_emit_copy(dmc_unrar_lzss *lzss, uint8_t *buffer,
+	dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, dmc_unrar_size_t copy_offset, dmc_unrar_size_t copy_size,
+	dmc_unrar_size_t *running_output_count);
 
 /** Continue emitting a copy from the last dmc_unrar_lzss_emit_copy() that was interrupted.
  *
  *  If no overhang is available, this function will do nothing. If the buffer
  *  runs out again before the remainder is copied, the remainder is again
  *  saved as an overhang. */
-static size_t dmc_unrar_lzss_emit_copy_overhang(dmc_unrar_lzss *lzss, uint8_t *buffer,
-	size_t buffer_size, size_t buffer_offset, size_t *running_output_count);
+static dmc_unrar_size_t dmc_unrar_lzss_emit_copy_overhang(dmc_unrar_lzss *lzss, uint8_t *buffer,
+	dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, dmc_unrar_size_t *running_output_count);
 
 /** Do we *have* LZSS overhang? */
 static bool dmc_unrar_lzss_has_overhang(dmc_unrar_lzss *lzss);
@@ -4544,7 +4566,7 @@ static dmc_unrar_return dmc_unrar_ppmd_create(dmc_unrar_alloc *alloc, dmc_unrar_
 static void dmc_unrar_ppmd_destroy(dmc_unrar_ppmd *ppmd);
 
 static dmc_unrar_return dmc_unrar_ppmd_start(dmc_unrar_ppmd *ppmd, dmc_unrar_bs *bs,
-	size_t heap_size_mb, size_t max_order);
+	dmc_unrar_size_t heap_size_mb, dmc_unrar_size_t max_order);
 
 static dmc_unrar_return dmc_unrar_ppmd_restart(dmc_unrar_ppmd *ppmd, dmc_unrar_bs *bs);
 
@@ -4581,17 +4603,17 @@ static void dmc_unrar_filters_destroy(dmc_unrar_filters *filters);
 static bool dmc_unrar_filters_empty(dmc_unrar_filters *filters);
 
 /** Return the offset of the first filter in the stack. */
-static size_t dmc_unrar_filters_get_first_offset(dmc_unrar_filters *filters);
+static dmc_unrar_size_t dmc_unrar_filters_get_first_offset(dmc_unrar_filters *filters);
 /** Return the length of the first filter in the stack. */
-static size_t dmc_unrar_filters_get_first_length(dmc_unrar_filters *filters);
+static dmc_unrar_size_t dmc_unrar_filters_get_first_length(dmc_unrar_filters *filters);
 
 /** Parse RAR4 filter bytecode, adding a filter to the filter stack. */
 static dmc_unrar_return dmc_unrar_filters_rar4_parse(dmc_unrar_filters *filters,
-	const uint8_t *data, size_t data_size, uint8_t flags, size_t current_output_offset);
+	const uint8_t *data, dmc_unrar_size_t data_size, uint8_t flags, dmc_unrar_size_t current_output_offset);
 
 /** Parse RAR5 filter, adding a filter to the filter stack. */
 static dmc_unrar_return dmc_unrar_filters_rar5_parse(dmc_unrar_filters *filters,
-	dmc_unrar_bs *bs, size_t current_output_offset);
+	dmc_unrar_bs *bs, dmc_unrar_size_t current_output_offset);
 
 /** Return the internal memory of the filter stack. */
 static uint8_t *dmc_unrar_filters_get_memory(dmc_unrar_filters *filters);
@@ -4601,7 +4623,7 @@ static uint8_t *dmc_unrar_filters_get_memory(dmc_unrar_filters *filters);
  *  The output is also found in the filter stack's internal memory, at
  *  the offset out_offset, with a length of out_length bytes. */
 static dmc_unrar_return dmc_unrar_filters_run(dmc_unrar_filters *filters,
-	size_t current_output_offset, size_t current_file_start, size_t *out_offset, size_t *out_length);
+	dmc_unrar_size_t current_output_offset, dmc_unrar_size_t current_file_start, dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
 
 #endif /* DMC_UNRAR_DISABLE_FILTERS */
 /* '--- */
@@ -4623,14 +4645,14 @@ struct dmc_unrar_rar_context_tag {
 
 	uint8_t *buffer; /**< The buffer to extract into. */
 
-	size_t buffer_size;   /** Size of the buffer. */
-	size_t buffer_offset; /** Current offset into the buffer. */
-	size_t solid_offset;  /** Number of bytes decoded for this solid part. */
-	size_t output_offset; /** Number of bytes decoded in total, including previous solid parts. */
+	dmc_unrar_size_t buffer_size;   /** Size of the buffer. */
+	dmc_unrar_size_t buffer_offset; /** Current offset into the buffer. */
+	dmc_unrar_size_t solid_offset;  /** Number of bytes decoded for this solid part. */
+	dmc_unrar_size_t output_offset; /** Number of bytes decoded in total, including previous solid parts. */
 
 	bool start_new_file; /** Do we need another solid part? */
 
-	size_t current_file_start; /** Offset the current solid part starts at. */
+	dmc_unrar_size_t current_file_start; /** Offset the current solid part starts at. */
 
 	dmc_unrar_bs bs;     /** Bitstream input. */
 	dmc_unrar_lzss lzss; /** LZSS context. */
@@ -4684,7 +4706,7 @@ static void dmc_unrar_rar_context_destroy(dmc_unrar_rar_context *ctx) {
 }
 
 static dmc_unrar_return dmc_unrar_rar_context_init(dmc_unrar_rar_context *ctx,
-		dmc_unrar_archive *archive, dmc_unrar_file_block *file, void *buffer, size_t buffer_size) {
+		dmc_unrar_archive *archive, dmc_unrar_file_block *file, void *buffer, dmc_unrar_size_t buffer_size) {
 
 	DMC_UNRAR_ASSERT(ctx && archive && file);
 
@@ -4709,7 +4731,7 @@ static dmc_unrar_return dmc_unrar_rar_context_init(dmc_unrar_rar_context *ctx,
 }
 
 static void dmc_unrar_rar_context_continue(dmc_unrar_rar_context *ctx,
-		void *buffer, size_t buffer_size) {
+		void *buffer, dmc_unrar_size_t buffer_size) {
 
 	ctx->solid_offset += ctx->buffer_offset;
 
@@ -4755,7 +4777,7 @@ static bool dmc_unrar_rar_context_check(dmc_unrar_rar_context *ctx,
 	return false;
 }
 
-static size_t dmc_unrar_extractor_unpack(void *opaque, void *buffer, size_t buffer_size,
+static dmc_unrar_size_t dmc_unrar_extractor_unpack(void *opaque, void *buffer, dmc_unrar_size_t buffer_size,
 		dmc_unrar_return *err) {
 
 	dmc_unrar_rar_context *ctx = (dmc_unrar_rar_context *)opaque;
@@ -4769,7 +4791,7 @@ static size_t dmc_unrar_extractor_unpack(void *opaque, void *buffer, size_t buff
 
 static dmc_unrar_return dmc_unrar_rar_context_unpack(dmc_unrar_rar_context *ctx,
 		dmc_unrar_archive *archive, dmc_unrar_file_block *file,
-		void *buffer, size_t buffer_size, size_t *uncompressed_size, uint32_t *crc,
+		void *buffer, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *uncompressed_size, uint32_t *crc,
 		void *opaque, dmc_unrar_extract_callback_func callback) {
 
 	dmc_unrar_return return_code;
@@ -4813,7 +4835,7 @@ static dmc_unrar_return dmc_unrar_rar_context_unpack(dmc_unrar_rar_context *ctx,
 			goto broken;
 
 		while (part && (part != file)) {
-			const size_t part_size = ctx->has_end_marker ? SIZE_MAX : part->file.uncompressed_size;
+			const dmc_unrar_size_t part_size = ctx->has_end_marker ? DMC_UNRAR_SIZE_MAX : part->file.uncompressed_size;
 
 			if (!dmc_unrar_rar_context_file_match(ctx, part, file))
 				goto broken;
@@ -4864,7 +4886,7 @@ static dmc_unrar_return dmc_unrar_rar_context_unpack(dmc_unrar_rar_context *ctx,
 
 		if (ctx->has_end_marker) {
 			ctx->buffer      = NULL;
-			ctx->buffer_size = SIZE_MAX;
+			ctx->buffer_size = DMC_UNRAR_SIZE_MAX;
 
 			if ((return_code = ctx->unpack(ctx)) != DMC_UNRAR_OK)
 				goto fail;
@@ -4921,15 +4943,15 @@ typedef struct dmc_unrar_rar15_context_tag {
 	unsigned int running_average_offset;
 	unsigned int running_average_below_maximum;
 
-	size_t maximum_offset;
+	dmc_unrar_size_t maximum_offset;
 
 	bool bug_fix_flag;
 
-	size_t last_offset;
-	size_t last_length;
+	dmc_unrar_size_t last_offset;
+	dmc_unrar_size_t last_length;
 
-	size_t old_offset[4];
-	size_t old_offset_index;
+	dmc_unrar_size_t old_offset[4];
+	dmc_unrar_size_t old_offset_index;
 
 	unsigned int flag_table[256];
 	unsigned int flag_reverse[256];
@@ -5329,10 +5351,10 @@ static dmc_unrar_return dmc_unrar_rar15_decompress(dmc_unrar_rar15_context *ctx)
 }
 
 static int dmc_unrar_rar15_lookup_byte(unsigned int *table, unsigned int *reverse,
-		unsigned int limit, size_t index) {
+		unsigned int limit, dmc_unrar_size_t index) {
 
 	unsigned int val = table[index];
-	size_t new_index = reverse[val & 0xFF]++;
+	dmc_unrar_size_t new_index = reverse[val & 0xFF]++;
 
 	if ((val & 0xFF) >= limit) {
 		dmc_unrar_rar15_reset_table(table, reverse);
@@ -5387,7 +5409,7 @@ static dmc_unrar_return dmc_unrar_rar15_decode_literal(dmc_unrar_rar15_context *
 
 	if (ctx->stored_block) {
 		if (index == 0) {
-			size_t length, offset;
+			dmc_unrar_size_t length, offset;
 
 			if (dmc_unrar_bs_read_bits(&ctx->ctx->bs, 1)) {
 				ctx->stored_block = false;
@@ -5474,7 +5496,7 @@ static dmc_unrar_return dmc_unrar_rar15_decode_short_match(dmc_unrar_rar15_conte
 		return return_code;
 
 	if (selector < 9) {
-		size_t offset_index, offset, length;
+		dmc_unrar_size_t offset_index, offset, length;
 
 		ctx->repeat_last_match_count = 0;
 
@@ -5514,7 +5536,7 @@ static dmc_unrar_return dmc_unrar_rar15_decode_short_match(dmc_unrar_rar15_conte
 	}
 
 	if (selector < 14) {
-		size_t offset, length;
+		dmc_unrar_size_t offset, length;
 
 		ctx->repeat_last_match_count = 0;
 
@@ -5548,8 +5570,8 @@ static dmc_unrar_return dmc_unrar_rar15_decode_short_match(dmc_unrar_rar15_conte
 	ctx->repeat_last_match_count = 0;
 
 	{
-		const size_t length = dmc_unrar_huff_get_symbol(&ctx->huff_lengths2, &ctx->ctx->bs, &return_code) + 5;
-		const size_t offset = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 15) + 0x8000;
+		const dmc_unrar_size_t length = dmc_unrar_huff_get_symbol(&ctx->huff_lengths2, &ctx->ctx->bs, &return_code) + 5;
+		const dmc_unrar_size_t offset = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 15) + 0x8000;
 
 		if (return_code != DMC_UNRAR_OK)
 			return return_code;
@@ -5566,7 +5588,7 @@ static dmc_unrar_return dmc_unrar_rar15_decode_short_match(dmc_unrar_rar15_conte
 
 static dmc_unrar_return dmc_unrar_rar15_decode_long_match(dmc_unrar_rar15_context *ctx) {
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
-	size_t raw_length, offset_index, offset, length;
+	dmc_unrar_size_t raw_length, offset_index, offset, length;
 
 	ctx->repeat_literal_count = 0;
 	ctx->match_weight += 16;
@@ -5656,7 +5678,7 @@ static dmc_unrar_return dmc_unrar_rar15_decode_long_match(dmc_unrar_rar15_contex
 #define DMC_UNRAR_20_MAX_CODE_COUNT (DMC_UNRAR_20_MAX_AUDIO_CHANNELS * DMC_UNRAR_20_AUDIO_CODE_COUNT)
 
 typedef struct dmc_unrar_rar20_audio_state_tag {
-	size_t count;
+	dmc_unrar_size_t count;
 
 	int last_delta;
 
@@ -5677,17 +5699,17 @@ typedef struct dmc_unrar_rar20_context_tag {
 
 	bool is_audio_block;
 
-	size_t channel_count;
-	size_t current_channel;
+	dmc_unrar_size_t channel_count;
+	dmc_unrar_size_t current_channel;
 	int channel_delta;
 
 	dmc_unrar_rar20_audio_state audio_state[DMC_UNRAR_20_MAX_AUDIO_CHANNELS];
 
-	size_t last_offset;
-	size_t last_length;
+	dmc_unrar_size_t last_offset;
+	dmc_unrar_size_t last_length;
 
-	size_t old_offset[4];
-	size_t old_offset_index;
+	dmc_unrar_size_t old_offset[4];
+	dmc_unrar_size_t old_offset_index;
 
 	dmc_unrar_huff huff_main;
 	dmc_unrar_huff huff_offset;
@@ -5760,7 +5782,7 @@ static dmc_unrar_return dmc_unrar_rar20_unpack(dmc_unrar_rar_context *ctx) {
 }
 
 static void dmc_unrar_rar20_free_codes(dmc_unrar_rar20_context *ctx) {
-	size_t i;
+	dmc_unrar_size_t i;
 
 	DMC_UNRAR_ASSERT(ctx);
 
@@ -5791,7 +5813,7 @@ static uint8_t dmc_unrar_rar20_decode_audio(dmc_unrar_rar20_audio_state *state,
 /** Number of codes in the RAR 2.0 codebook code. */
 #define DMC_UNRAR_20_PRE_CODE_COUNT 19
 
-static const size_t DMC_UNRAR_20_LENGTH_BASES[DMC_UNRAR_20_LENGTH_CODE_COUNT] = {
+static const dmc_unrar_size_t DMC_UNRAR_20_LENGTH_BASES[DMC_UNRAR_20_LENGTH_CODE_COUNT] = {
 	  0,   1,   2,   3,   4,   5,   6,   7,   8,  10,  12,  14,  16,  20,
 	 24,  28,  32,  40,  48,  56,  64,  80,  96, 112, 128, 160, 192, 224
 };
@@ -5799,7 +5821,7 @@ static const uint8_t DMC_UNRAR_20_LENGTH_BITS[DMC_UNRAR_20_LENGTH_CODE_COUNT] = 
 	  0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   1,   1,   2,   2,
 	  2,   2,   3,   3,   3,   3,   4,   4,   4,   4,   5,   5,   5,   5
 };
-static const size_t DMC_UNRAR_20_OFFSET_BASES[DMC_UNRAR_20_OFFSET_CODE_COUNT] = {
+static const dmc_unrar_size_t DMC_UNRAR_20_OFFSET_BASES[DMC_UNRAR_20_OFFSET_CODE_COUNT] = {
 	     0,      1,      2,      3,      4,      6,      8,     12,     16,     24,     32,     48,
 	    64,     96,    128,    192,    256,    384,    512,    768,   1024,   1536,   2048,   3072,
 	  4096,   6144,   8192,  12288,  16384,  24576,  32768,  49152,  65536,  98304, 131072, 196608,
@@ -5811,7 +5833,7 @@ static const uint8_t DMC_UNRAR_20_OFFSET_BITS[DMC_UNRAR_20_OFFSET_CODE_COUNT] = 
 	    11,     11,     12,     12,     13,     13,     14,     14,     15,     15,     16,     16,
 	    16,     16,     16,     16,     16,     16,     16,     16,     16,     16,     16,     16
 };
-static const size_t DMC_UNRAR_20_SHORT_BASES[DMC_UNRAR_20_SMALL_CODE_COUNT] = {
+static const dmc_unrar_size_t DMC_UNRAR_20_SHORT_BASES[DMC_UNRAR_20_SMALL_CODE_COUNT] = {
 	  0,   4,   8,  16,  32,  64, 128, 192
 };
 static const uint8_t DMC_UNRAR_20_SHORT_BITS[DMC_UNRAR_20_SMALL_CODE_COUNT] = {
@@ -5832,7 +5854,7 @@ static dmc_unrar_return dmc_unrar_rar20_decompress(dmc_unrar_rar20_context *ctx)
 	while (ctx->ctx->buffer_offset < ctx->ctx->buffer_size) {
 		uint8_t literal;
 		uint32_t symbol;
-		size_t offset, length;
+		dmc_unrar_size_t offset, length;
 
 		if (dmc_unrar_lzss_has_overhang(&ctx->ctx->lzss)) {
 			ctx->ctx->buffer_offset = dmc_unrar_lzss_emit_copy_overhang(&ctx->ctx->lzss, ctx->ctx->buffer,
@@ -5958,7 +5980,7 @@ static dmc_unrar_return dmc_unrar_rar20_read_codes(dmc_unrar_rar20_context *ctx)
 	dmc_unrar_huff huff_pre;
 	uint8_t pre_lengths[DMC_UNRAR_20_PRE_CODE_COUNT];
 
-	size_t count, i, j;
+	dmc_unrar_size_t count, i, j;
 
 	ctx->is_audio_block = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 1);
 
@@ -6001,18 +6023,18 @@ static dmc_unrar_return dmc_unrar_rar20_read_codes(dmc_unrar_rar20_context *ctx)
 			}
 
 			{
-				const size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 2) + 3;
+				const dmc_unrar_size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 2) + 3;
 				for (j = 0; (j < n) && (i < count); j++, i++)
 					ctx->length_table[i] = ctx->length_table[i - 1];
 			}
 
 		} else if (val == 17) {
-			const size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 3) + 3;
+			const dmc_unrar_size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 3) + 3;
 			for (j = 0; (j < n) && (i < count); j++, i++)
 				ctx->length_table[i] = 0;
 
 		} else {
-			const size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 7) + 11;
+			const dmc_unrar_size_t n = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 7) + 11;
 			for (j = 0; (j < n) && (i < count); j++, i++)
 				ctx->length_table[i] = 0;
 		}
@@ -6031,9 +6053,9 @@ static dmc_unrar_return dmc_unrar_rar20_read_codes(dmc_unrar_rar20_context *ctx)
 		}
 
 	} else {
-		static const size_t main_code_offset   = 0;
-		static const size_t offset_code_offset = DMC_UNRAR_20_MAIN_CODE_COUNT;
-		static const size_t length_code_offset = DMC_UNRAR_20_MAIN_CODE_COUNT + DMC_UNRAR_20_OFFSET_CODE_COUNT;
+		static const dmc_unrar_size_t main_code_offset   = 0;
+		static const dmc_unrar_size_t offset_code_offset = DMC_UNRAR_20_MAIN_CODE_COUNT;
+		static const dmc_unrar_size_t length_code_offset = DMC_UNRAR_20_MAIN_CODE_COUNT + DMC_UNRAR_20_OFFSET_CODE_COUNT;
 
 		return_code = dmc_unrar_huff_create_from_lengths(&ctx->ctx->archive->alloc, &ctx->huff_main,
 			ctx->length_table + main_code_offset, DMC_UNRAR_20_MAIN_CODE_COUNT, DMC_UNRAR_20_CODE_LENGTH);
@@ -6156,12 +6178,12 @@ typedef struct dmc_unrar_rar30_context_tag {
 
 	bool start_new_table;
 
-	size_t last_offset;
-	size_t last_length;
-	size_t old_offset[4];
+	dmc_unrar_size_t last_offset;
+	dmc_unrar_size_t last_length;
+	dmc_unrar_size_t old_offset[4];
 
-	size_t last_small;
-	size_t small_offset_repeat_count;
+	dmc_unrar_size_t last_small;
+	dmc_unrar_size_t small_offset_repeat_count;
 
 	bool is_ppmd_block;
 	uint8_t ppmd_escape;
@@ -6172,8 +6194,8 @@ typedef struct dmc_unrar_rar30_context_tag {
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	dmc_unrar_filters filters;
 	uint8_t filter_buffer[DMC_UNRAR_FILTERS_BYTECODE_SIZE];
-	size_t filter_output_length, filter_output_offset;
-	size_t filter_overhang, filter_offset;
+	dmc_unrar_size_t filter_output_length, filter_output_offset;
+	dmc_unrar_size_t filter_overhang, filter_offset;
 #endif /* DMC_UNRAR_DISABLE_FILTERS */
 
 	uint8_t length_table[DMC_UNRAR_30_MAX_CODE_COUNT];
@@ -6287,12 +6309,12 @@ static void dmc_unrar_rar30_free_codes(dmc_unrar_rar30_context *ctx) {
 static dmc_unrar_return dmc_unrar_rar30_read_codes(dmc_unrar_rar30_context *ctx);
 
 static dmc_unrar_return dmc_unrar_rar30_decode_huffman(dmc_unrar_rar30_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count);
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count);
 static dmc_unrar_return dmc_unrar_rar30_decode_ppmd(dmc_unrar_rar30_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count);
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count);
 
 static dmc_unrar_return dmc_unrar_rar30_decompress_block(dmc_unrar_rar30_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count,
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count,
 	bool stop_at_filter);
 
 static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx) {
@@ -6308,15 +6330,15 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	while (ctx->ctx->buffer_offset < ctx->ctx->buffer_size) {
-		const size_t current_offset = ctx->ctx->current_file_start + ctx->ctx->solid_offset + ctx->ctx->buffer_offset;
+		const dmc_unrar_size_t current_offset = ctx->ctx->current_file_start + ctx->ctx->solid_offset + ctx->ctx->buffer_offset;
 
 		if (ctx->filter_overhang > 0) {
 			/* We still have filter output that goes to the decompression output buffer. */
 
 			uint8_t *filter_memory = dmc_unrar_filters_get_memory(&ctx->filters);
 
-			const size_t buffer_space = ctx->ctx->buffer_size - ctx->ctx->buffer_offset;
-			const size_t copy_back = DMC_UNRAR_MIN(ctx->filter_overhang, buffer_space);
+			const dmc_unrar_size_t buffer_space = ctx->ctx->buffer_size - ctx->ctx->buffer_offset;
+			const dmc_unrar_size_t copy_back = DMC_UNRAR_MIN(ctx->filter_overhang, buffer_space);
 
 			if (ctx->ctx->buffer)
 				memcpy(ctx->ctx->buffer + ctx->ctx->buffer_offset,
@@ -6376,7 +6398,7 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 
 		{
 			uint8_t *filter_memory = dmc_unrar_filters_get_memory(&ctx->filters);
-			size_t filter_length = dmc_unrar_filters_get_first_length(&ctx->filters);
+			dmc_unrar_size_t filter_length = dmc_unrar_filters_get_first_length(&ctx->filters);
 
 			DMC_UNRAR_ASSERT(filter_length < DMC_UNRAR_FILTERS_MEMORY_SIZE);
 
@@ -6392,7 +6414,7 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 		/* We have a filter and its memory data now. */
 
 		{
-			size_t next_filter = 0;
+			dmc_unrar_size_t next_filter = 0;
 
 			/* Run the filter. */
 
@@ -6421,7 +6443,7 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 }
 
 static dmc_unrar_return dmc_unrar_rar30_decompress_block(dmc_unrar_rar30_context *ctx,
-		uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count,
+		uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count,
 		bool stop_at_filter) {
 
 	dmc_unrar_return return_code;
@@ -6435,7 +6457,7 @@ static dmc_unrar_return dmc_unrar_rar30_decompress_block(dmc_unrar_rar30_context
 
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 		if (stop_at_filter) {
-			const size_t filter_pos = dmc_unrar_filters_get_first_offset(&ctx->filters) -
+			const dmc_unrar_size_t filter_pos = dmc_unrar_filters_get_first_offset(&ctx->filters) -
 			                          ctx->ctx->current_file_start - ctx->ctx->solid_offset;
 
 			buffer_size = DMC_UNRAR_MIN(buffer_size, filter_pos);
@@ -6476,7 +6498,7 @@ static dmc_unrar_return dmc_unrar_rar30_init_ppmd(dmc_unrar_rar30_context *ctx) 
 #if DMC_UNRAR_DISABLE_PPMD != 1
 	const uint8_t flags = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 7);
 
-	size_t heap_size_mb = SIZE_MAX;
+	dmc_unrar_size_t heap_size_mb = DMC_UNRAR_SIZE_MAX;
 	if (flags & 0x20)
 		heap_size_mb = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8) + 1;
 
@@ -6484,14 +6506,14 @@ static dmc_unrar_return dmc_unrar_rar30_init_ppmd(dmc_unrar_rar30_context *ctx) 
 		ctx->ppmd_escape = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
 
 	if (flags & 0x20) {
-		size_t max_order = (flags & 0x1F) + 1;
+		dmc_unrar_size_t max_order = (flags & 0x1F) + 1;
 		if (max_order > 16)
 			max_order = 16 + (max_order - 16) * 3;
 
 		if (max_order == 1)
 			return DMC_UNRAR_PPMD_INVALID_MAXORDER;
 
-		DMC_UNRAR_ASSERT(heap_size_mb != SIZE_MAX);
+		DMC_UNRAR_ASSERT(heap_size_mb != DMC_UNRAR_SIZE_MAX);
 
 		return dmc_unrar_ppmd_start(&ctx->ppmd, &ctx->ctx->bs, heap_size_mb, max_order);
 	}
@@ -6514,7 +6536,7 @@ static dmc_unrar_return dmc_unrar_rar30_init_huffman(dmc_unrar_rar30_context *ct
 
 	dmc_unrar_huff huff_pre;
 	uint8_t pre_lengths[DMC_UNRAR_30_PRE_CODE_COUNT];
-	size_t i, j;
+	dmc_unrar_size_t i, j;
 
 	ctx->last_small = 0;
 	ctx->small_offset_repeat_count = 0;
@@ -6523,9 +6545,9 @@ static dmc_unrar_return dmc_unrar_rar30_init_huffman(dmc_unrar_rar30_context *ct
 		DMC_UNRAR_CLEAR_ARRAY(ctx->length_table);
 
 	for (i = 0; i < DMC_UNRAR_30_PRE_CODE_COUNT; ) {
-		const size_t length = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4);
+		const dmc_unrar_size_t length = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4);
 		if (length == DMC_UNRAR_30_CODE_LENGTH) {
-			const size_t count = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4) + 2;
+			const dmc_unrar_size_t count = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4) + 2;
 
 			if (count == 2)
 				pre_lengths[i++] = DMC_UNRAR_30_CODE_LENGTH;
@@ -6544,7 +6566,7 @@ static dmc_unrar_return dmc_unrar_rar30_init_huffman(dmc_unrar_rar30_context *ct
 		return return_code;
 
 	for (i = 0; i < DMC_UNRAR_30_MAX_CODE_COUNT; ) {
-		size_t n;
+		dmc_unrar_size_t n;
 
 		const uint32_t val = dmc_unrar_huff_get_symbol(&huff_pre, &ctx->ctx->bs, &return_code);
 		if (return_code != DMC_UNRAR_OK)
@@ -6631,7 +6653,7 @@ static dmc_unrar_return dmc_unrar_rar30_read_codes(dmc_unrar_rar30_context *ctx)
 }
 
 static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint32_t symbol,
-	size_t *offset, size_t *length, dmc_unrar_return *return_code);
+	dmc_unrar_size_t *offset, dmc_unrar_size_t *length, dmc_unrar_return *return_code);
 
 static dmc_unrar_return dmc_unrar_rar30_read_filter_from_input(dmc_unrar_rar30_context *ctx);
 
@@ -6640,7 +6662,7 @@ static dmc_unrar_return dmc_unrar_rar30_read_filter_from_ppmd(dmc_unrar_rar30_co
 #endif /* DMC_UNRAR_DISABLE_PPMD */
 
 static dmc_unrar_return dmc_unrar_rar30_decode_huffman(dmc_unrar_rar30_context *ctx,
-		uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count) {
+		uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count) {
 
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
@@ -6677,7 +6699,7 @@ static dmc_unrar_return dmc_unrar_rar30_decode_huffman(dmc_unrar_rar30_context *
 		return dmc_unrar_rar30_read_filter_from_input(ctx);
 
 	{
-		size_t offset, length;
+		dmc_unrar_size_t offset, length;
 		if (!dmc_unrar_rar30_decode_copy_param(ctx, symbol, &offset, &length, &return_code))
 			return return_code;
 
@@ -6695,9 +6717,9 @@ static dmc_unrar_return dmc_unrar_rar30_decode_huffman(dmc_unrar_rar30_context *
 }
 
 static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint32_t symbol,
-		size_t *offset, size_t *length, dmc_unrar_return *return_code) {
+		dmc_unrar_size_t *offset, dmc_unrar_size_t *length, dmc_unrar_return *return_code) {
 
-	static const size_t DMC_UNRAR_30_LENGTH_BASES[28] = {
+	static const dmc_unrar_size_t DMC_UNRAR_30_LENGTH_BASES[28] = {
 		  0,   1,   2,   3,   4,   5,   6,   7,   8,  10,  12,  14,  16,  20,
 		 24,  28,  32,  40,  48,  56,  64,  80,  96, 112, 128, 160, 192, 224
 	};
@@ -6706,7 +6728,7 @@ static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint
 		  2,   2,   3,   3,   3,   3,   4,   4,   4,   4,   5,   5,   5,   5
 	};
 
-	static const size_t DMC_UNRAR_30_OFFSET_BASES[60] = {
+	static const dmc_unrar_size_t DMC_UNRAR_30_OFFSET_BASES[60] = {
 		      0,       1,       2,       3,       4,       6,       8,      12,      16,      24,
 		     32,      48,      64,      96,     128,     192,     256,     384,     512,     768,
 		   1024,    1536,    2048,    3072,    4096,    6144,    8192,   12288,   16384,   24576,
@@ -6723,14 +6745,14 @@ static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint
 		     18,      18,      18,      18,      18,      18,      18,      18,      18,      18
 	};
 
-	static const size_t DMC_UNRAR_30_SHORT_BASES[8] = {
+	static const dmc_unrar_size_t DMC_UNRAR_30_SHORT_BASES[8] = {
 		  0,   4,   8,  16,  32,  64, 128, 192
 	};
 	static const uint8_t DMC_UNRAR_30_SHORT_BITS[8] = {
 		  2,   2,   3,   4,   5,   6,   6,   6
 	};
 
-	size_t offset_index, length_index, i;
+	dmc_unrar_size_t offset_index, length_index, i;
 
 	DMC_UNRAR_ASSERT(return_code);
 	*return_code = DMC_UNRAR_OK;
@@ -6797,7 +6819,7 @@ static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint
 				ctx->small_offset_repeat_count--;
 				*offset += ctx->last_small;
 			} else {
-				const size_t small_offset_symbol = dmc_unrar_huff_get_symbol(&ctx->huff_small, &ctx->ctx->bs, return_code);
+				const dmc_unrar_size_t small_offset_symbol = dmc_unrar_huff_get_symbol(&ctx->huff_small, &ctx->ctx->bs, return_code);
 				if (*return_code != DMC_UNRAR_OK)
 					return false;
 
@@ -6831,12 +6853,12 @@ static bool dmc_unrar_rar30_decode_copy_param(dmc_unrar_rar30_context *ctx, uint
 }
 
 static dmc_unrar_return dmc_unrar_rar30_decode_ppmd(dmc_unrar_rar30_context *ctx,
-		uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count) {
+		uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count) {
 
 #if DMC_UNRAR_DISABLE_PPMD != 1
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
 	uint8_t symbol, code;
-	size_t offset, length;
+	dmc_unrar_size_t offset, length;
 
 	symbol = dmc_unrar_ppmd_get_byte(&ctx->ppmd);
 
@@ -6917,9 +6939,9 @@ static dmc_unrar_return dmc_unrar_rar30_read_filter_from_input(dmc_unrar_rar30_c
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	dmc_unrar_return result = DMC_UNRAR_OK;
 	const uint8_t flags = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
-	size_t i;
+	dmc_unrar_size_t i;
 
-	size_t length = (flags & 7) + 1;
+	dmc_unrar_size_t length = (flags & 7) + 1;
 	if      (length == 7)
 		length = dmc_unrar_bs_read_bits(&ctx->ctx->bs,  8) + 7;
 	else if (length == 8)
@@ -6956,9 +6978,9 @@ static dmc_unrar_return dmc_unrar_rar30_read_filter_from_ppmd(dmc_unrar_rar30_co
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	dmc_unrar_return result = DMC_UNRAR_OK;
 	const uint8_t flags = dmc_unrar_ppmd_get_byte(&ctx->ppmd);
-	size_t i;
+	dmc_unrar_size_t i;
 
-	size_t length = (flags & 7) + 1;
+	dmc_unrar_size_t length = (flags & 7) + 1;
 	if      (length == 7)
 		length = dmc_unrar_ppmd_get_byte(&ctx->ppmd) + 7;
 	else if (length == 8) {
@@ -7015,17 +7037,17 @@ static dmc_unrar_return dmc_unrar_rar30_read_filter_from_ppmd(dmc_unrar_rar30_co
 typedef struct dmc_unrar_rar50_context_tag {
 	dmc_unrar_rar_context *ctx;
 
-	size_t last_length;
-	size_t old_offset[4];
+	dmc_unrar_size_t last_length;
+	dmc_unrar_size_t old_offset[4];
 
-	size_t block_end_bits;
+	dmc_unrar_size_t block_end_bits;
 	bool is_last_block;
 
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	dmc_unrar_filters filters;
 	uint8_t filter_buffer[DMC_UNRAR_FILTERS_BYTECODE_SIZE];
-	size_t filter_output_length, filter_output_offset;
-	size_t filter_overhang, filter_offset;
+	dmc_unrar_size_t filter_output_length, filter_output_offset;
+	dmc_unrar_size_t filter_overhang, filter_offset;
 #endif /* DMC_UNRAR_DISABLE_FILTERS */
 
 	uint8_t length_table[DMC_UNRAR_50_MAX_CODE_COUNT];
@@ -7125,10 +7147,10 @@ static void dmc_unrar_rar50_free_codes(dmc_unrar_rar50_context *ctx) {
 static dmc_unrar_return dmc_unrar_rar50_read_block_header(dmc_unrar_rar50_context *ctx);
 
 static dmc_unrar_return dmc_unrar_rar50_decode_huffman(dmc_unrar_rar50_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count);
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count);
 
 static dmc_unrar_return dmc_unrar_rar50_decompress_block(dmc_unrar_rar50_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count,
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count,
 	bool stop_at_filter);
 
 static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx) {
@@ -7146,15 +7168,15 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 	while (ctx->ctx->buffer_offset < ctx->ctx->buffer_size) {
-		const size_t current_offset = ctx->ctx->current_file_start + ctx->ctx->solid_offset + ctx->ctx->buffer_offset;
+		const dmc_unrar_size_t current_offset = ctx->ctx->current_file_start + ctx->ctx->solid_offset + ctx->ctx->buffer_offset;
 
 		if (ctx->filter_overhang > 0) {
 			/* We still have filter output that goes to the decompression output buffer. */
 
 			uint8_t *filter_memory = dmc_unrar_filters_get_memory(&ctx->filters);
 
-			const size_t buffer_space = ctx->ctx->buffer_size - ctx->ctx->buffer_offset;
-			const size_t copy_back = DMC_UNRAR_MIN(ctx->filter_overhang, buffer_space);
+			const dmc_unrar_size_t buffer_space = ctx->ctx->buffer_size - ctx->ctx->buffer_offset;
+			const dmc_unrar_size_t copy_back = DMC_UNRAR_MIN(ctx->filter_overhang, buffer_space);
 
 			if (ctx->ctx->buffer)
 				memcpy(ctx->ctx->buffer + ctx->ctx->buffer_offset,
@@ -7214,7 +7236,7 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 
 		{
 			uint8_t *filter_memory = dmc_unrar_filters_get_memory(&ctx->filters);
-			size_t filter_length = dmc_unrar_filters_get_first_length(&ctx->filters);
+			dmc_unrar_size_t filter_length = dmc_unrar_filters_get_first_length(&ctx->filters);
 
 			DMC_UNRAR_ASSERT(filter_length < DMC_UNRAR_FILTERS_MEMORY_SIZE);
 
@@ -7230,7 +7252,7 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 		/* We have a filter and its memory data now. */
 
 		{
-			size_t next_filter = 0;
+			dmc_unrar_size_t next_filter = 0;
 
 			/* Run the filter. */
 
@@ -7259,7 +7281,7 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 }
 
 static dmc_unrar_return dmc_unrar_rar50_decompress_block(dmc_unrar_rar50_context *ctx,
-		uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count,
+		uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count,
 		bool stop_at_filter) {
 
 	dmc_unrar_return return_code;
@@ -7273,7 +7295,7 @@ static dmc_unrar_return dmc_unrar_rar50_decompress_block(dmc_unrar_rar50_context
 
 #if DMC_UNRAR_DISABLE_FILTERS != 1
 		if (stop_at_filter) {
-			const size_t filter_pos = dmc_unrar_filters_get_first_offset(&ctx->filters) -
+			const dmc_unrar_size_t filter_pos = dmc_unrar_filters_get_first_offset(&ctx->filters) -
 			                          ctx->ctx->current_file_start - ctx->ctx->solid_offset;
 
 			buffer_size = DMC_UNRAR_MIN(buffer_size, filter_pos);
@@ -7330,7 +7352,7 @@ static dmc_unrar_return dmc_unrar_rar50_read_block_header(dmc_unrar_rar50_contex
 
 	{
 		uint8_t calculated_checksum, size_count, block_size_bits;
-		size_t block_size = 0, i;
+		dmc_unrar_size_t block_size = 0, i;
 
 		const uint8_t flags    = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
 		const uint8_t checksum = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
@@ -7360,7 +7382,7 @@ static dmc_unrar_return dmc_unrar_rar50_read_block_header(dmc_unrar_rar50_contex
 			return DMC_UNRAR_50_BLOCK_CHECKSUM_NO_MATCH;
 
 		{
-			const size_t current_offset = ctx->ctx->current_file_start * 8 + ctx->ctx->bs.offset_bits;
+			const dmc_unrar_size_t current_offset = ctx->ctx->current_file_start * 8 + ctx->ctx->bs.offset_bits;
 
 			ctx->block_end_bits = current_offset + block_size * 8 + block_size_bits - 8;
 		}
@@ -7384,7 +7406,7 @@ static dmc_unrar_return dmc_unrar_rar50_read_codes(dmc_unrar_rar50_context *ctx)
 
 	dmc_unrar_huff huff_pre;
 	uint8_t pre_lengths[DMC_UNRAR_50_PRE_CODE_COUNT];
-	size_t i, j;
+	dmc_unrar_size_t i, j;
 
 	dmc_unrar_rar50_free_codes(ctx);
 
@@ -7392,7 +7414,7 @@ static dmc_unrar_return dmc_unrar_rar50_read_codes(dmc_unrar_rar50_context *ctx)
 		uint8_t length = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4);
 
 		if (length == 15) {
-			size_t count = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4) + 2;
+			dmc_unrar_size_t count = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 4) + 2;
 
 			if (count != 2) {
 				for (j = 0; j < count && i < 20; j++)
@@ -7413,7 +7435,7 @@ static dmc_unrar_return dmc_unrar_rar50_read_codes(dmc_unrar_rar50_context *ctx)
 		return return_code;
 
 	for (i = 0; i < DMC_UNRAR_50_MAX_CODE_COUNT; ) {
-		size_t n;
+		dmc_unrar_size_t n;
 
 		const uint32_t val = dmc_unrar_huff_get_symbol(&huff_pre, &ctx->ctx->bs, &return_code);
 		if (return_code != DMC_UNRAR_OK)
@@ -7485,12 +7507,12 @@ end:
 }
 
 static bool dmc_unrar_rar50_decode_copy_param(dmc_unrar_rar50_context *ctx, uint32_t symbol,
-	size_t *offset, size_t *length, dmc_unrar_return *return_code);
+	dmc_unrar_size_t *offset, dmc_unrar_size_t *length, dmc_unrar_return *return_code);
 
 static dmc_unrar_return dmc_unrar_rar50_read_filter_from_input(dmc_unrar_rar50_context *ctx);
 
 static dmc_unrar_return dmc_unrar_rar50_decode_huffman(dmc_unrar_rar50_context *ctx,
-	uint8_t *buffer, size_t *buffer_offset, size_t buffer_size, size_t *running_output_count) {
+	uint8_t *buffer, dmc_unrar_size_t *buffer_offset, dmc_unrar_size_t buffer_size, dmc_unrar_size_t *running_output_count) {
 
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
@@ -7511,7 +7533,7 @@ static dmc_unrar_return dmc_unrar_rar50_decode_huffman(dmc_unrar_rar50_context *
 		return dmc_unrar_rar50_read_filter_from_input(ctx);
 
 	{
-		size_t offset, length;
+		dmc_unrar_size_t offset, length;
 		if (!dmc_unrar_rar50_decode_copy_param(ctx, symbol, &offset, &length, &return_code))
 			return return_code;
 
@@ -7527,10 +7549,10 @@ static dmc_unrar_return dmc_unrar_rar50_decode_huffman(dmc_unrar_rar50_context *
 	return DMC_UNRAR_OK;
 }
 
-static size_t dmc_unrar_rar50_read_length_with_symbol(dmc_unrar_rar50_context *ctx, uint32_t symbol,
+static dmc_unrar_size_t dmc_unrar_rar50_read_length_with_symbol(dmc_unrar_rar50_context *ctx, uint32_t symbol,
 	dmc_unrar_return *return_code) {
 
-	size_t length;
+	dmc_unrar_size_t length;
 
 	DMC_UNRAR_ASSERT(return_code);
 	*return_code = DMC_UNRAR_OK;
@@ -7539,7 +7561,7 @@ static size_t dmc_unrar_rar50_read_length_with_symbol(dmc_unrar_rar50_context *c
 		return symbol + 2;
 
 	{
-		size_t length_bits = symbol / 4 - 1;
+		dmc_unrar_size_t length_bits = symbol / 4 - 1;
 
 		length  = ((4 + (symbol & 3)) << length_bits) + 2;
 		length += dmc_unrar_bs_read_bits(&ctx->ctx->bs, length_bits);
@@ -7552,9 +7574,9 @@ static size_t dmc_unrar_rar50_read_length_with_symbol(dmc_unrar_rar50_context *c
 }
 
 static bool dmc_unrar_rar50_decode_copy_param(dmc_unrar_rar50_context *ctx, uint32_t symbol,
-	size_t *offset, size_t *length, dmc_unrar_return *return_code) {
+	dmc_unrar_size_t *offset, dmc_unrar_size_t *length, dmc_unrar_return *return_code) {
 
-	size_t offset_symbol, length_symbol, i;
+	dmc_unrar_size_t offset_symbol, length_symbol, i;
 
 	DMC_UNRAR_ASSERT(return_code);
 	*return_code = DMC_UNRAR_OK;
@@ -7773,7 +7795,7 @@ static bool dmc_unrar_bs_init_from_io(dmc_unrar_bs *bs, dmc_unrar_io *io, uint64
 }
 
 static bool dmc_unrar_bs_refill_l2_cache_from_client(dmc_unrar_bs *bs) {
-	size_t bytes_read, aligned_l1_line_count;
+	dmc_unrar_size_t bytes_read, aligned_l1_line_count;
 
 	if (bs->unaligned_byte_count > 0)
 		/* If we have any unaligned bytes it means there's no more aligned bytes left in the client.. */
@@ -7800,7 +7822,7 @@ static bool dmc_unrar_bs_refill_l2_cache_from_client(dmc_unrar_bs *bs) {
 		bs->unaligned_cache = bs->cache_l2[aligned_l1_line_count];
 
 	if (aligned_l1_line_count > 0) {
-		size_t i, offset = DMC_UNRAR_BS_L2_LINE_COUNT(bs) - aligned_l1_line_count;
+		dmc_unrar_size_t i, offset = DMC_UNRAR_BS_L2_LINE_COUNT(bs) - aligned_l1_line_count;
 		for (i = aligned_l1_line_count; i > 0; --i) {
 			bs->cache_l2[i-1 + offset] = bs->cache_l2[i-1];
 		}
@@ -7834,7 +7856,7 @@ static bool dmc_unrar_bs_reload_l1_cache_from_l2(dmc_unrar_bs *bs) {
 }
 
 static bool dmc_unrar_bs_reload_cache(dmc_unrar_bs *bs) {
-	size_t bytes_read;
+	dmc_unrar_size_t bytes_read;
 
 	/* Fast path. Try just moving the next value in the L2 cache to the L1 cache.. */
 	if (dmc_unrar_bs_reload_l1_cache_from_l2(bs)) {
@@ -7867,8 +7889,8 @@ static bool dmc_unrar_bs_reload_cache(dmc_unrar_bs *bs) {
 	return true;
 }
 
-static bool dmc_unrar_bs_seek_bits(dmc_unrar_bs *bs, size_t bits_to_seek) {
-	size_t whole_bytes_remaining;
+static bool dmc_unrar_bs_seek_bits(dmc_unrar_bs *bs, dmc_unrar_size_t bits_to_seek) {
+	dmc_unrar_size_t whole_bytes_remaining;
 
 	if (bits_to_seek <= DMC_UNRAR_BS_L1_BITS_REMAINING(bs)) {
 		bs->offset_bits += bits_to_seek;
@@ -7893,7 +7915,7 @@ static bool dmc_unrar_bs_seek_bits(dmc_unrar_bs *bs, size_t bits_to_seek) {
 		 * DMC_UNRAR_BS_L1_SIZE_BYTES aligned (usually 4 or 8). If, for example,
 		 * the number of bytes to seek is 3, we'll need to handle it in a special way. */
 
-		size_t whole_cache_lines_remaining = whole_bytes_remaining / DMC_UNRAR_BS_L1_SIZE_BYTES(bs);
+		dmc_unrar_size_t whole_cache_lines_remaining = whole_bytes_remaining / DMC_UNRAR_BS_L1_SIZE_BYTES(bs);
 		if (whole_cache_lines_remaining < DMC_UNRAR_BS_L2_LINES_REMAINING(bs)) {
 			whole_bytes_remaining -= whole_cache_lines_remaining * DMC_UNRAR_BS_L1_SIZE_BYTES(bs);
 			bits_to_seek -= whole_cache_lines_remaining * DMC_UNRAR_BS_L1_SIZE_BITS(bs);
@@ -7950,8 +7972,8 @@ static bool dmc_unrar_bs_peek_uint32(dmc_unrar_bs *bs, unsigned int bit_count,
 	/* It straddles the cached. Peek in 2 parts. */
 
 	{
-		size_t bit_count_hi = DMC_UNRAR_BS_L1_BITS_REMAINING(bs);
-		size_t bit_count_lo = bit_count - bit_count_hi;
+		dmc_unrar_size_t bit_count_hi = DMC_UNRAR_BS_L1_BITS_REMAINING(bs);
+		dmc_unrar_size_t bit_count_lo = bit_count - bit_count_hi;
 		uint32_t result_hi = DMC_UNRAR_BS_L1_SELECT_AND_SHIFT(bs, bit_count_hi);
 		dmc_unrar_bs_cache_t result_lo;
 
@@ -8021,8 +8043,8 @@ static bool dmc_unrar_bs_read_uint32(dmc_unrar_bs *bs, unsigned int bit_count,
 		/* It straddles the cached data. It will never cover more than the next chunk.
 		 * We just read the number in two parts and combine them. */
 
-		size_t bit_count_hi = DMC_UNRAR_BS_L1_BITS_REMAINING(bs);
-		size_t bit_count_lo = bit_count - bit_count_hi;
+		dmc_unrar_size_t bit_count_hi = DMC_UNRAR_BS_L1_BITS_REMAINING(bs);
+		dmc_unrar_size_t bit_count_lo = bit_count - bit_count_hi;
 		uint32_t result_hi = DMC_UNRAR_BS_L1_SELECT_AND_SHIFT(bs, bit_count_hi);
 
 		if (!dmc_unrar_bs_reload_cache(bs))
@@ -8036,7 +8058,7 @@ static bool dmc_unrar_bs_read_uint32(dmc_unrar_bs *bs, unsigned int bit_count,
 	return true;
 }
 
-static uint32_t dmc_unrar_bs_read_bits(dmc_unrar_bs *bs, size_t n) {
+static uint32_t dmc_unrar_bs_read_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n) {
 	uint32_t data = 0;
 	if (bs->error || !dmc_unrar_bs_read_uint32(bs, n, &data)) {
 		bs->error = true;
@@ -8046,7 +8068,7 @@ static uint32_t dmc_unrar_bs_read_bits(dmc_unrar_bs *bs, size_t n) {
 	return data;
 }
 
-static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, size_t n) {
+static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n) {
 	uint32_t data = 0;
 	if (bs->error || !dmc_unrar_bs_peek_uint32(bs, n, &data)) {
 		bs->error = true;
@@ -8056,7 +8078,7 @@ static uint32_t dmc_unrar_bs_peek_bits(dmc_unrar_bs *bs, size_t n) {
 	return data;
 }
 
-static bool dmc_unrar_bs_skip_bits(dmc_unrar_bs *bs, size_t n) {
+static bool dmc_unrar_bs_skip_bits(dmc_unrar_bs *bs, dmc_unrar_size_t n) {
 	if (bs->error || !dmc_unrar_bs_seek_bits(bs, n)) {
 		bs->error = true;
 		return false;
@@ -8075,7 +8097,7 @@ static bool dmc_unrar_bs_has_error(dmc_unrar_bs *bs) {
 
 static bool dmc_unrar_bs_eos(dmc_unrar_bs *bs) {
 	/* We still have data left in the client. */
-	if (dmc_unrar_io_tell(&bs->io) < (int64_t)bs->io.size)
+	if (dmc_unrar_io_tell(&bs->io) < (dmc_unrar_offset_t)bs->io.size)
 		return false;
 
 	/* We still have data left in the L2 cache, either unaligned or aligned. */
@@ -8090,8 +8112,8 @@ static bool dmc_unrar_bs_eos(dmc_unrar_bs *bs) {
 	return true;
 }
 
-static bool dmc_unrar_bs_has_at_least(dmc_unrar_bs *bs, size_t n) {
-	size_t count1, count2;
+static bool dmc_unrar_bs_has_at_least(dmc_unrar_bs *bs, dmc_unrar_size_t n) {
+	dmc_unrar_size_t count1, count2;
 	uint64_t client_bytes;
 
 	DMC_UNRAR_ASSERT(n <= 32);
@@ -8112,15 +8134,15 @@ static bool dmc_unrar_bs_has_at_least(dmc_unrar_bs *bs, size_t n) {
 
 /* .--- Huffman implementation */
 static dmc_unrar_return dmc_unrar_huff_create_tree(dmc_unrar_huff *huff, uint8_t max_length,
-	size_t code_count, const uint32_t *codes, const uint8_t *lengths, const uint32_t *symbols);
+	dmc_unrar_size_t code_count, const uint32_t *codes, const uint8_t *lengths, const uint32_t *symbols);
 static dmc_unrar_return dmc_unrar_huff_create_tree_from_lengths(dmc_unrar_huff *huff,
-	const uint8_t *lengths, size_t code_count, uint8_t max_length);
+	const uint8_t *lengths, dmc_unrar_size_t code_count, uint8_t max_length);
 static dmc_unrar_return dmc_unrar_huff_create_table(dmc_unrar_huff *huff, uint8_t max_length);
 
 static uint8_t dmc_unrar_huff_find_max_length(uint8_t max_length, const uint8_t *lengths,
-		size_t lengths_count) {
+		dmc_unrar_size_t lengths_count) {
 
-	size_t i;
+	dmc_unrar_size_t i;
 
 	if (max_length == 0)
 		for (i = 0; i < lengths_count; i++)
@@ -8133,7 +8155,7 @@ static uint8_t dmc_unrar_huff_find_max_length(uint8_t max_length, const uint8_t 
 }
 
 static dmc_unrar_return dmc_unrar_huff_create(dmc_unrar_alloc *alloc, dmc_unrar_huff *huff,
-	uint8_t max_length, size_t code_count, const uint32_t *codes, const uint8_t *lengths,
+	uint8_t max_length, dmc_unrar_size_t code_count, const uint32_t *codes, const uint8_t *lengths,
 	const uint32_t *symbols) {
 
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
@@ -8166,7 +8188,7 @@ fail:
 }
 
 static dmc_unrar_return dmc_unrar_huff_create_from_lengths(dmc_unrar_alloc *alloc,
-		dmc_unrar_huff *huff, const uint8_t *lengths, size_t code_count, uint8_t max_length) {
+		dmc_unrar_huff *huff, const uint8_t *lengths, dmc_unrar_size_t code_count, uint8_t max_length) {
 
 	dmc_unrar_return return_code = DMC_UNRAR_OK;
 
@@ -8213,7 +8235,7 @@ typedef enum {
 	DMC_UNRAR_HUFF_TREE_BRANCH_RIGHT = 1
 } dmc_unrar_huff_tree_branch;
 
-static uint32_t *dmc_unrar_huff_tree_node_get(dmc_unrar_huff *huff, size_t index) {
+static uint32_t *dmc_unrar_huff_tree_node_get(dmc_unrar_huff *huff, dmc_unrar_size_t index) {
 	return &huff->tree[index * 2];
 }
 
@@ -8246,12 +8268,12 @@ static void dmc_unrar_huff_tree_node_set_empty(uint32_t *node) {
 }
 
 static void dmc_unrar_huff_tree_node_set_branch(uint32_t *node, dmc_unrar_huff_tree_branch branch,
-		size_t index) {
+		dmc_unrar_size_t index) {
 
 	node[branch] = index;
 }
 
-static size_t dmc_unrar_huff_tree_node_new(dmc_unrar_huff *huff) {
+static dmc_unrar_size_t dmc_unrar_huff_tree_node_new(dmc_unrar_huff *huff) {
 	dmc_unrar_huff_tree_node_set_empty(dmc_unrar_huff_tree_node_get(huff, huff->node_count));
 
 	return huff->node_count++;
@@ -8308,10 +8330,10 @@ static dmc_unrar_return dmc_unrar_huff_tree_node_add(dmc_unrar_huff *huff,
 }
 
 static dmc_unrar_return dmc_unrar_huff_create_tree(dmc_unrar_huff *huff, uint8_t max_length,
-		size_t code_count, const uint32_t *codes, const uint8_t *lengths, const uint32_t *symbols) {
+		dmc_unrar_size_t code_count, const uint32_t *codes, const uint8_t *lengths, const uint32_t *symbols) {
 
-	const size_t tree_size = (1 << (max_length + 1)) * 2;
-	size_t i;
+	const dmc_unrar_size_t tree_size = (1 << (max_length + 1)) * 2;
+	dmc_unrar_size_t i;
 
 	huff->tree = (uint32_t *)dmc_unrar_malloc(huff->alloc, tree_size, sizeof(uint32_t));
 	if (!huff->tree)
@@ -8334,13 +8356,13 @@ static dmc_unrar_return dmc_unrar_huff_create_tree(dmc_unrar_huff *huff, uint8_t
 }
 
 static dmc_unrar_return dmc_unrar_huff_create_tree_from_lengths(dmc_unrar_huff *huff,
-		const uint8_t *lengths, size_t code_count, uint8_t max_length) {
+		const uint8_t *lengths, dmc_unrar_size_t code_count, uint8_t max_length) {
 
 	uint8_t length;
 	uint32_t code = 0;
-	size_t codes_left = code_count, i;
+	dmc_unrar_size_t codes_left = code_count, i;
 
-	const size_t tree_size = (1 << (max_length + 1)) * 2;
+	const dmc_unrar_size_t tree_size = (1 << (max_length + 1)) * 2;
 
 	huff->tree = (uint32_t *)dmc_unrar_malloc(huff->alloc, tree_size, sizeof(uint32_t));
 	if (!huff->tree)
@@ -8373,13 +8395,13 @@ static dmc_unrar_return dmc_unrar_huff_create_tree_from_lengths(dmc_unrar_huff *
 	return DMC_UNRAR_OK;
 }
 
-static void dmc_unrar_huff_table_create(dmc_unrar_huff *huff, size_t node, uint32_t *table,
-		size_t depth, size_t max_depth) {
+static void dmc_unrar_huff_table_create(dmc_unrar_huff *huff, dmc_unrar_size_t node, uint32_t *table,
+		dmc_unrar_size_t depth, dmc_unrar_size_t max_depth) {
 
-	size_t cur_table_size = 1 << (max_depth - depth);
+	dmc_unrar_size_t cur_table_size = 1 << (max_depth - depth);
 
 	if (dmc_unrar_huff_tree_node_is_invalid(node)) {
-		size_t i;
+		dmc_unrar_size_t i;
 
 		for (i = 0; i < cur_table_size; i++)
 			table[i] = 0xFFFFFFFF;
@@ -8392,7 +8414,7 @@ static void dmc_unrar_huff_table_create(dmc_unrar_huff *huff, size_t node, uint3
 
 		if (dmc_unrar_huff_tree_node_is_leaf(node_pointer)) {
 			const uint32_t value = (depth << 27) | dmc_unrar_huff_tree_node_get_leaf_value(node_pointer);
-			size_t i;
+			dmc_unrar_size_t i;
 
 			for (i = 0; i < cur_table_size; i++)
 				table[i] = value;
@@ -8425,7 +8447,7 @@ static dmc_unrar_return dmc_unrar_huff_create_table(dmc_unrar_huff *huff, uint8_
 static uint32_t dmc_unrar_huff_get_symbol(dmc_unrar_huff *huff, dmc_unrar_bs *bs,
 		dmc_unrar_return *err) {
 
-	size_t start_node = 0;
+	dmc_unrar_size_t start_node = 0;
 	uint32_t *node;
 
 	*err = DMC_UNRAR_OK;
@@ -8435,7 +8457,7 @@ static uint32_t dmc_unrar_huff_get_symbol(dmc_unrar_huff *huff, dmc_unrar_bs *bs
 	 * we're going to peek past the end of the bitstream. */
 
 	if (dmc_unrar_bs_has_at_least(bs, huff->table_size)) {
-		size_t length;
+		dmc_unrar_size_t length;
 		uint32_t value;
 
 		const uint32_t table_entry = huff->table[dmc_unrar_bs_peek_bits(bs, huff->table_size)];
@@ -8482,12 +8504,12 @@ static uint32_t dmc_unrar_huff_get_symbol(dmc_unrar_huff *huff, dmc_unrar_bs *bs
 /* '--- */
 
 /* .--- LZSS implementation */
-static bool dmc_unrar_is_power_2(size_t x) {
+static bool dmc_unrar_is_power_2(dmc_unrar_size_t x) {
 	return x && !(x & (x - 1));
 }
 
 static dmc_unrar_return dmc_unrar_lzss_create(dmc_unrar_alloc *alloc, dmc_unrar_lzss *lzss,
-		size_t window_size) {
+		dmc_unrar_size_t window_size) {
 
 	DMC_UNRAR_ASSERT(alloc && lzss);
 	DMC_UNRAR_ASSERT(window_size && dmc_unrar_is_power_2(window_size));
@@ -8516,8 +8538,8 @@ static void dmc_unrar_lzss_destroy(dmc_unrar_lzss *lzss) {
 	DMC_UNRAR_CLEAR_OBJ(*lzss);
 }
 
-static size_t dmc_unrar_lzss_emit_literal_no_buffer(dmc_unrar_lzss *lzss,
-		size_t buffer_size, size_t buffer_offset, uint8_t literal, size_t *running_output_count) {
+static dmc_unrar_size_t dmc_unrar_lzss_emit_literal_no_buffer(dmc_unrar_lzss *lzss,
+		dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, uint8_t literal, dmc_unrar_size_t *running_output_count) {
 
 	DMC_UNRAR_ASSERT(lzss);
 	DMC_UNRAR_ASSERT(buffer_offset < buffer_size);
@@ -8532,8 +8554,8 @@ static size_t dmc_unrar_lzss_emit_literal_no_buffer(dmc_unrar_lzss *lzss,
 	return buffer_offset;
 }
 
-static size_t dmc_unrar_lzss_emit_literal(dmc_unrar_lzss *lzss, uint8_t *buffer,
-		size_t buffer_size, size_t buffer_offset, uint8_t literal, size_t *running_output_count) {
+static dmc_unrar_size_t dmc_unrar_lzss_emit_literal(dmc_unrar_lzss *lzss, uint8_t *buffer,
+		dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, uint8_t literal, dmc_unrar_size_t *running_output_count) {
 
 	if (!buffer)
 		return dmc_unrar_lzss_emit_literal_no_buffer(lzss, buffer_size,
@@ -8551,9 +8573,9 @@ static size_t dmc_unrar_lzss_emit_literal(dmc_unrar_lzss *lzss, uint8_t *buffer,
 	return buffer_offset;
 }
 
-static size_t dmc_unrar_lzss_emit_copy(dmc_unrar_lzss *lzss, uint8_t *buffer,
-		size_t buffer_size, size_t buffer_offset, size_t copy_offset, size_t copy_size,
-		size_t *running_output_count) {
+static dmc_unrar_size_t dmc_unrar_lzss_emit_copy(dmc_unrar_lzss *lzss, uint8_t *buffer,
+		dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, dmc_unrar_size_t copy_offset, dmc_unrar_size_t copy_size,
+		dmc_unrar_size_t *running_output_count) {
 
 	DMC_UNRAR_ASSERT(lzss);
 	DMC_UNRAR_ASSERT(copy_offset <= lzss->window_offset);
@@ -8597,8 +8619,8 @@ static bool dmc_unrar_lzss_has_overhang(dmc_unrar_lzss *lzss) {
 	return lzss->copy_size > 0;
 }
 
-static size_t dmc_unrar_lzss_emit_copy_overhang(dmc_unrar_lzss *lzss, uint8_t *buffer,
-	size_t buffer_size, size_t buffer_offset, size_t *running_output_count) {
+static dmc_unrar_size_t dmc_unrar_lzss_emit_copy_overhang(dmc_unrar_lzss *lzss, uint8_t *buffer,
+	dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, dmc_unrar_size_t *running_output_count) {
 
 	DMC_UNRAR_ASSERT(lzss);
 
@@ -10105,7 +10127,7 @@ static int dmc_unrar_ppmd_read_from_bs(void *context) {
 }
 
 static dmc_unrar_return dmc_unrar_ppmd_start(dmc_unrar_ppmd *ppmd, dmc_unrar_bs *bs,
-	size_t heap_size_mb, size_t max_order) {
+	dmc_unrar_size_t heap_size_mb, dmc_unrar_size_t max_order) {
 
 	DMC_UNRAR_ASSERT(ppmd && bs && ppmd->alloc);
 
@@ -10205,7 +10227,7 @@ static const uint32_t DMC_UNRAR_CRC32_TABLE[] = {
 	0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
-uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, size_t size) {
+uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, dmc_unrar_size_t size) {
 	const uint8_t *bytes = (const uint8_t *)mem;
 
 	hash ^= 0xFFFFFFFF;
@@ -10218,7 +10240,7 @@ uint32_t dmc_unrar_crc32_continue_from_mem(uint32_t hash, const void *mem, size_
 	return hash;
 }
 
-uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size) {
+uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, dmc_unrar_size_t size) {
 	return dmc_unrar_crc32_continue_from_mem(0, mem, size);
 }
 
@@ -10230,23 +10252,23 @@ uint32_t dmc_unrar_crc32_calculate_from_mem(const void *mem, size_t size) {
 #define DMC_UNRAR_FILTERS_EXTRA_MEMORY_SIZE 0x4000
 #define DMC_UNRAR_FILTERS_TOTAL_MEMORY_SIZE (DMC_UNRAR_FILTERS_MEMORY_SIZE + DMC_UNRAR_FILTERS_EXTRA_MEMORY_SIZE)
 
-typedef dmc_unrar_return (*dmc_unrar_filter_func)(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
+typedef dmc_unrar_return (*dmc_unrar_filter_func)(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
 
 typedef struct dmc_unrar_filters_filter_tag {
-	size_t usage_count;
-	size_t last_in_length;
+	dmc_unrar_size_t usage_count;
+	dmc_unrar_size_t last_in_length;
 
 	dmc_unrar_filter_func func;
 
 } dmc_unrar_filters_filter;
 
 typedef struct dmc_unrar_filters_stack_entry_tag {
-	size_t filter_index;
+	dmc_unrar_size_t filter_index;
 
-	size_t offset;
-	size_t length;
+	dmc_unrar_size_t offset;
+	dmc_unrar_size_t length;
 
 	uint32_t registers[8];
 
@@ -10255,15 +10277,15 @@ typedef struct dmc_unrar_filters_stack_entry_tag {
 struct dmc_unrar_filters_interal_state_tag {
 	uint8_t memory[DMC_UNRAR_FILTERS_TOTAL_MEMORY_SIZE];
 
-	size_t last_filter;
+	dmc_unrar_size_t last_filter;
 
-	size_t filter_count;
+	dmc_unrar_size_t filter_count;
 	dmc_unrar_filters_filter *filters;
-	size_t filter_capacity;
+	dmc_unrar_size_t filter_capacity;
 
-	size_t stack_count;
+	dmc_unrar_size_t stack_count;
 	dmc_unrar_filters_stack_entry *stack;
-	size_t stack_capacity;
+	dmc_unrar_size_t stack_capacity;
 };
 
 static uint32_t dmc_unrar_filters_rar4_read_number(dmc_unrar_bs *bs);
@@ -10330,15 +10352,15 @@ static bool dmc_unrar_filters_empty(dmc_unrar_filters *filters) {
 	return true;
 }
 
-static size_t dmc_unrar_filters_get_first_offset(dmc_unrar_filters *filters) {
+static dmc_unrar_size_t dmc_unrar_filters_get_first_offset(dmc_unrar_filters *filters) {
 	if (filters && filters->internal_state)
 		if (filters->internal_state->stack_count > 0)
 			return filters->internal_state->stack[0].offset;
 
-	return SIZE_MAX;
+	return DMC_UNRAR_SIZE_MAX;
 }
 
-static size_t dmc_unrar_filters_get_first_length(dmc_unrar_filters *filters) {
+static dmc_unrar_size_t dmc_unrar_filters_get_first_length(dmc_unrar_filters *filters) {
 	if (filters && filters->internal_state)
 		if (filters->internal_state->stack_count > 0)
 			return filters->internal_state->stack[0].length;
@@ -10349,19 +10371,19 @@ static size_t dmc_unrar_filters_get_first_length(dmc_unrar_filters *filters) {
 static void dmc_unrar_filters_clear(dmc_unrar_filters *filters);
 
 static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_unrar_filters *filters,
-	const uint8_t *bytecode, size_t bytecode_length);
+	const uint8_t *bytecode, dmc_unrar_size_t bytecode_length);
 static dmc_unrar_return dmc_unrar_filters_create_stack_entry(dmc_unrar_filters *filters,
-	size_t filter_index, size_t filter_offset, size_t filter_length, uint32_t *registers);
+	dmc_unrar_size_t filter_index, dmc_unrar_size_t filter_offset, dmc_unrar_size_t filter_length, uint32_t *registers);
 
 static dmc_unrar_return dmc_unrar_filters_rar4_parse(dmc_unrar_filters *filters,
-		const uint8_t *data, size_t data_size, uint8_t flags, size_t current_output_offset) {
+		const uint8_t *data, dmc_unrar_size_t data_size, uint8_t flags, dmc_unrar_size_t current_output_offset) {
 
 	dmc_unrar_mem_reader mem_reader;
 	dmc_unrar_io io;
 	dmc_unrar_bs bs;
 
 	bool new_filter = false;
-	size_t index, filter_offset, filter_length;
+	dmc_unrar_size_t index, filter_offset, filter_length;
 	uint32_t usage_count, registers[8];
 
 	uint8_t bytecode[DMC_UNRAR_FILTERS_BYTECODE_SIZE];
@@ -10437,7 +10459,7 @@ static dmc_unrar_return dmc_unrar_filters_rar4_parse(dmc_unrar_filters *filters,
 	}
 
 	if (new_filter) {
-		size_t bytecode_length = dmc_unrar_filters_rar4_read_number(&bs), i;
+		dmc_unrar_size_t bytecode_length = dmc_unrar_filters_rar4_read_number(&bs), i;
 		if ((bytecode_length < 2) || (bytecode_length > DMC_UNRAR_FILTERS_BYTECODE_SIZE))
 			return DMC_UNRAR_FILTERS_UNKNOWN;
 
@@ -10469,8 +10491,8 @@ static uint8_t *dmc_unrar_filters_get_memory(dmc_unrar_filters *filters) {
 }
 
 static dmc_unrar_return dmc_unrar_filters_run(dmc_unrar_filters *filters,
-		size_t current_output_offset, size_t current_file_start, size_t *out_offset,
-		size_t *out_length) {
+		dmc_unrar_size_t current_output_offset, dmc_unrar_size_t current_file_start, dmc_unrar_size_t *out_offset,
+		dmc_unrar_size_t *out_length) {
 
 	dmc_unrar_return return_code;
 	bool first = true, result;
@@ -10549,10 +10571,10 @@ static uint32_t dmc_unrar_filters_rar4_read_number(dmc_unrar_bs *bs) {
 }
 
 static uint32_t dmc_unrar_filters_rar5_read_number(dmc_unrar_bs *bs) {
-	const size_t count = dmc_unrar_bs_read_bits(bs, 2) + 1;
+	const dmc_unrar_size_t count = dmc_unrar_bs_read_bits(bs, 2) + 1;
 	uint32_t value = 0;
 
-	size_t i;
+	dmc_unrar_size_t i;
 	for (i = 0; i < count; i++)
 		value += dmc_unrar_bs_read_bits(bs, 8) << (i * 8);
 
@@ -10586,7 +10608,7 @@ typedef enum {
 
 } dmc_unrar_filters_program5;
 
-static dmc_unrar_filters_program4 dmc_unrar_filters_identify_rar4(const uint8_t *bytecode, size_t size) {
+static dmc_unrar_filters_program4 dmc_unrar_filters_identify_rar4(const uint8_t *bytecode, dmc_unrar_size_t size) {
 	const uint32_t crc32 = dmc_unrar_crc32_calculate_from_mem(bytecode, size);
 
 	switch (crc32) {
@@ -10627,29 +10649,29 @@ static dmc_unrar_filters_program4 dmc_unrar_filters_identify_rar4(const uint8_t 
 	return DMC_UNRAR_FILTERS_PROGRAM4_UNKNOWN;
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_delta_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_30_color_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_delta_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_color_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
 
 static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_unrar_filters *filters,
-		const uint8_t *bytecode, size_t bytecode_length) {
+		const uint8_t *bytecode, dmc_unrar_size_t bytecode_length) {
 
-	size_t i;
+	dmc_unrar_size_t i;
 	uint8_t xor_sum = 0;
 	dmc_unrar_filters_program4 program = DMC_UNRAR_FILTERS_PROGRAM4_UNKNOWN;
 	dmc_unrar_filters_filter *filter = NULL;
@@ -10706,7 +10728,7 @@ static dmc_unrar_return dmc_unrar_filters_create_rar4_filter_from_bytecode(dmc_u
 }
 
 static dmc_unrar_return dmc_unrar_filters_create_stack_entry(dmc_unrar_filters *filters,
-		size_t filter_index, size_t filter_offset, size_t filter_length, uint32_t *registers) {
+		dmc_unrar_size_t filter_index, dmc_unrar_size_t filter_offset, dmc_unrar_size_t filter_length, uint32_t *registers) {
 
 	dmc_unrar_filters_stack_entry *entry;
 
@@ -10742,7 +10764,7 @@ static bool dmc_unrar_filters_init_filters(dmc_unrar_filters *filters) {
 
 static bool dmc_unrar_filters_ensure_capacity_filters(dmc_unrar_filters *filters) {
 	dmc_unrar_filters_filter *new_filters;
-	size_t new_capacity;
+	dmc_unrar_size_t new_capacity;
 
 	if (filters->internal_state->filter_count < filters->internal_state->filter_capacity)
 		return true;
@@ -10782,7 +10804,7 @@ static bool dmc_unrar_filters_init_stack(dmc_unrar_filters *filters) {
 
 static bool dmc_unrar_filters_ensure_capacity_stack(dmc_unrar_filters *filters) {
 	dmc_unrar_filters_stack_entry *new_stack;
-	size_t new_capacity;
+	dmc_unrar_size_t new_capacity;
 
 	if (filters->internal_state->stack_count < filters->internal_state->stack_capacity)
 		return true;
@@ -10822,9 +10844,9 @@ static bool dmc_unrar_filters_stack_pop(dmc_unrar_filters *filters) {
 }
 
 static void dmc_unrar_filters_delta_filter(const uint8_t *src, uint8_t *dst,
-		size_t length, size_t channel_count) {
+		dmc_unrar_size_t length, dmc_unrar_size_t channel_count) {
 
-	size_t i, offset;
+	dmc_unrar_size_t i, offset;
 	for (i = 0; i < channel_count; i++) {
 		uint8_t last = 0;
 
@@ -10833,11 +10855,11 @@ static void dmc_unrar_filters_delta_filter(const uint8_t *src, uint8_t *dst,
 	}
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_delta_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_delta_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	const size_t channel_count = registers[0];
+	const dmc_unrar_size_t channel_count = registers[0];
 
 	if (in_length > (memory_size / 2))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -10852,7 +10874,7 @@ static dmc_unrar_return dmc_unrar_filters_30_delta_func(uint8_t *memory, size_t 
 }
 
 typedef struct dmc_unrar_filters_30_audio_state_tag {
-	size_t count;
+	dmc_unrar_size_t count;
 
 	int last_delta;
 
@@ -10926,9 +10948,9 @@ static uint8_t dmc_unrar_filters_30_audio_decode(dmc_unrar_filters_30_audio_stat
 	return cur_byte;
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if (in_length > (memory_size / 2))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -10937,12 +10959,12 @@ static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, size_t 
 	*out_length = in_length;
 
 	{
-		const size_t channel_count = registers[0];
+		const dmc_unrar_size_t channel_count = registers[0];
 
 		const uint8_t *src = memory;
 		uint8_t *dst = memory + *out_offset;
 
-		size_t i, offset;
+		dmc_unrar_size_t i, offset;
 		for (i = 0; i < channel_count; i++) {
 			dmc_unrar_filters_30_audio_state state;
 			DMC_UNRAR_CLEAR_OBJ(state);
@@ -10957,10 +10979,10 @@ static dmc_unrar_return dmc_unrar_filters_30_audio_func(uint8_t *memory, size_t 
 }
 
 static void dmc_unrar_filters_30_color_filter(const uint8_t *src, uint8_t *dst,
-		size_t length, uint32_t r0, uint32_t r1) {
+		dmc_unrar_size_t length, uint32_t r0, uint32_t r1) {
 
 	int32_t r3[7];
-	size_t color, offset, i;
+	dmc_unrar_size_t color, offset, i;
 
 	for (color = 0; color < 3; color++) {
 		r3[0] = 0;
@@ -10999,9 +11021,9 @@ static void dmc_unrar_filters_30_color_filter(const uint8_t *src, uint8_t *dst,
 	}
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_color_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_color_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > (memory_size / 2)) || (in_length < 3))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11022,11 +11044,11 @@ static void dmc_unrar_put_uint32le(uint8_t *data, uint32_t x) {
 	data[0] = x;
 }
 
-static void dmc_unrar_filters_x86_filter(uint8_t *memory, size_t length,
+static void dmc_unrar_filters_x86_filter(uint8_t *memory, dmc_unrar_size_t length,
 		int32_t file_pos, bool handle_e9, bool wrap_position) {
 
 	const int32_t file_size = 0x1000000;
-	size_t i;
+	dmc_unrar_size_t i;
 
 	for (i = 0; i <= length - 5; i++) {
 		if ((memory[i] == 0xE8) || (handle_e9 && (memory[i] == 0xE9))) {
@@ -11049,9 +11071,9 @@ static void dmc_unrar_filters_x86_filter(uint8_t *memory, size_t length,
 	}
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11067,9 +11089,9 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, size_t me
 	return DMC_UNRAR_OK;
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11085,7 +11107,7 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, size_t
 	return DMC_UNRAR_OK;
 }
 
-static uint32_t dmc_unrar_filters_itanium_read_bits(const uint8_t *buf, size_t offset, size_t n) {
+static uint32_t dmc_unrar_filters_itanium_read_bits(const uint8_t *buf, dmc_unrar_size_t offset, dmc_unrar_size_t n) {
 	uint32_t x;
 
 	DMC_UNRAR_ASSERT(buf);
@@ -11096,7 +11118,7 @@ static uint32_t dmc_unrar_filters_itanium_read_bits(const uint8_t *buf, size_t o
 	return x & (0xFFFFFFFF >> (32 - n));
 }
 
-static void dmc_unrar_filters_itanium_write_bits(uint8_t *buf, size_t offset, size_t n, uint32_t x) {
+static void dmc_unrar_filters_itanium_write_bits(uint8_t *buf, dmc_unrar_size_t offset, dmc_unrar_size_t n, uint32_t x) {
 	uint32_t mask;
 
 	DMC_UNRAR_ASSERT(buf);
@@ -11110,9 +11132,9 @@ static void dmc_unrar_filters_itanium_write_bits(uint8_t *buf, size_t offset, si
 	dmc_unrar_put_uint32le(buf + (offset / 8), x);
 }
 
-static void dmc_unrar_filters_itanium_filter(uint8_t *memory, size_t length, int32_t file_pos) {
+static void dmc_unrar_filters_itanium_filter(uint8_t *memory, dmc_unrar_size_t length, int32_t file_pos) {
 	static const uint8_t DMC_UNRAR_BYTEMASK[] = { 4, 4, 6, 6, 0, 0, 7, 7, 4, 4, 0, 0, 4, 4, 0, 0 };
-	size_t i, j, k;
+	dmc_unrar_size_t i, j, k;
 
 	file_pos /= 16;
 
@@ -11128,7 +11150,7 @@ static void dmc_unrar_filters_itanium_filter(uint8_t *memory, size_t length, int
 			continue;
 
 		for (k = 0; k <= 2; k++) {
-			const size_t position = k * 41 + 18;
+			const dmc_unrar_size_t position = k * 41 + 18;
 			uint32_t n;
 
 			if ((mask & (1 << k)) == 0)
@@ -11143,9 +11165,9 @@ static void dmc_unrar_filters_itanium_filter(uint8_t *memory, size_t length, int
 	}
 }
 
-static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, size_t memory_size,
-		size_t file_position, size_t in_length, const uint32_t *registers,
-		size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 16))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11161,29 +11183,29 @@ static dmc_unrar_return dmc_unrar_filters_30_itanium_func(uint8_t *memory, size_
 	return DMC_UNRAR_OK;
 }
 
-static dmc_unrar_return dmc_unrar_filters_50_delta_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
-static dmc_unrar_return dmc_unrar_filters_50_arm_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_50_delta_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
+static dmc_unrar_return dmc_unrar_filters_50_arm_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length);
 
 static dmc_unrar_return dmc_unrar_filters_rar5_parse(dmc_unrar_filters *filters,
-		dmc_unrar_bs *bs, size_t current_output_offset) {
+		dmc_unrar_bs *bs, dmc_unrar_size_t current_output_offset) {
 
-	size_t filter_index = SIZE_MAX;
+	dmc_unrar_size_t filter_index = DMC_UNRAR_SIZE_MAX;
 	dmc_unrar_filters_filter *filter = NULL;
 	uint32_t registers[8];
 
-	size_t  filter_offset = dmc_unrar_filters_rar5_read_number(bs) + current_output_offset;
-	size_t  filter_length = dmc_unrar_filters_rar5_read_number(bs);
-	uint8_t filter_type   = dmc_unrar_bs_read_bits(bs, 3);
+	dmc_unrar_size_t filter_offset = dmc_unrar_filters_rar5_read_number(bs) + current_output_offset;
+	dmc_unrar_size_t filter_length = dmc_unrar_filters_rar5_read_number(bs);
+	uint8_t filter_type = dmc_unrar_bs_read_bits(bs, 3);
 
 	if (!dmc_unrar_filters_grow_filters(filters))
 		return DMC_UNRAR_ALLOC_FAIL;
@@ -11234,11 +11256,11 @@ static dmc_unrar_return dmc_unrar_filters_rar5_parse(dmc_unrar_filters *filters,
 		filter_offset, filter_length, registers);
 }
 
-static dmc_unrar_return dmc_unrar_filters_50_delta_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_50_delta_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	const size_t channel_count = registers[0];
+	const dmc_unrar_size_t channel_count = registers[0];
 
 	if (in_length > (memory_size / 2))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11252,9 +11274,9 @@ static dmc_unrar_return dmc_unrar_filters_50_delta_func(uint8_t *memory, size_t 
 	return DMC_UNRAR_OK;
 }
 
-static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11270,9 +11292,9 @@ static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, size_t me
 	return DMC_UNRAR_OK;
 }
 
-static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
@@ -11288,8 +11310,8 @@ static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, size_t
 	return DMC_UNRAR_OK;
 }
 
-static void dmc_unrar_filters_50_arm_filter(uint8_t *memory, size_t length, int32_t file_pos) {
-	size_t i;
+static void dmc_unrar_filters_50_arm_filter(uint8_t *memory, dmc_unrar_size_t length, int32_t file_pos) {
+	dmc_unrar_size_t i;
 
 	for (i = 0; i <= length - 4; i += 4) {
 		if (memory[i + 3] == 0xEB) {
@@ -11304,9 +11326,9 @@ static void dmc_unrar_filters_50_arm_filter(uint8_t *memory, size_t length, int3
 	}
 }
 
-static dmc_unrar_return dmc_unrar_filters_50_arm_func(uint8_t *memory, size_t memory_size,
-	size_t file_position, size_t in_length, const uint32_t *registers,
-	size_t *out_offset, size_t *out_length) {
+static dmc_unrar_return dmc_unrar_filters_50_arm_func(uint8_t *memory, dmc_unrar_size_t memory_size,
+	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
+	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
