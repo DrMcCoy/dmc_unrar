@@ -82,7 +82,7 @@
  * - Changed internal I/O interface to be more flexible
  * - Added Win32 direct file access for future large file support
  * - Added a macro to optionally use fseeko/ftello for future large file
- *   support, by default used on macOS
+ *   support, by default used on 32-bit macOS
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -175,7 +175,7 @@
 
 /* Set DMC_UNRAR_USE_FSEEKO_FTELLO to 1 to use fseeko/ftello for file seeking.
  * Set DMC_UNRAR_USE_FSEEKO_FTELLO to 0 to use fseek/ftell for file seeking.
- * Leave DMC_UNRAR_USE_FSEEKO_FTELLO unset to automatically use it on macOS. */
+ * Leave DMC_UNRAR_USE_FSEEKO_FTELLO unset to use it on 32-bit macOS. */
 #if 0
 #define DMC_UNRAR_USE_FSEEKO_FTELLO 0
 #define DMC_UNRAR_USE_FSEEKO_FTELLO 1
