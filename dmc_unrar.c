@@ -258,10 +258,11 @@
 
 #if 0
 typedef signed char int8_t
+typedef signed int int32_t;
+typedef signed long long int64_t;
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
-typedef signed long long int64_t;
 typedef unsigned long long uint64_t;
 typedef unsigned long long size_t;
 
@@ -929,6 +930,7 @@ typedef unsigned char dmc_unrar_validate_uint16[sizeof(uint16_t)==2 ? 1 : -1];
 typedef unsigned char dmc_unrar_validate_uint32[sizeof(uint32_t)==4 ? 1 : -1];
 typedef unsigned char dmc_unrar_validate_uint64[sizeof(uint64_t)==8 ? 1 : -1];
 typedef unsigned char dmc_unrar_validate_int8  [sizeof( int8_t )==1 ? 1 : -1];
+typedef unsigned char dmc_unrar_validate_int32 [sizeof( int32_t)==4 ? 1 : -1];
 typedef unsigned char dmc_unrar_validate_int64 [sizeof( int64_t)==8 ? 1 : -1];
 
 #include <stdlib.h>
