@@ -173,6 +173,22 @@
 #define DMC_UNRAR_DISABLE_STDIO 0
 #endif
 
+/* Set DMC_UNRAR_USE_FSEEKO_FTELLO to 1 to use fseeko/ftello for file seeking.
+ * Set DMC_UNRAR_USE_FSEEKO_FTELLO to 0 to use fseek/ftell for file seeking.
+ * Leave DMC_UNRAR_USE_FSEEKO_FTELLO unset to automatically use it on macOS. */
+#if 0
+#define DMC_UNRAR_USE_FSEEKO_FTELLO 0
+#define DMC_UNRAR_USE_FSEEKO_FTELLO 1
+#endif
+
+/* Set DMC_UNRAR_DISABLE_WIN32 to 1 to never use the WIN32 API for file IO.
+ * Set DMC_UNRAR_DISABLE_WIN32 to 0 to always use the WIN32 API for file IO.
+ * Leave DMC_UNRAR_DISABLE_WIN32 unset to autodetect. */
+#if 0
+#define DMC_UNRAR_DISABLE_WIN32 1
+#define DMC_UNRAR_DISABLE_WIN32 0
+#endif
+
 /* RAR 2.9/3.6 can optionally compress text using the PPMd algorithm.
  * The PPMd decoder is rather big, uses a lot of memory and needs compiler
  * support for pragma pack. If you don't need to decompress RAR archives
@@ -293,8 +309,7 @@ typedef int bool;
 	#error DMC_UNRAR_BS_BUFFER_SIZE must be a multiple of 8
 #endif
 
-/* Autodetecting whether we're on Win32. You can set this to 1 to disable this and fallback
- * on stdio (if available). */
+/* Autodetecting whether we're on Win32. */
 #ifndef DMC_UNRAR_DISABLE_WIN32
 	#ifdef _WIN32
 		#define DMC_UNRAR_DISABLE_WIN32 0
@@ -303,8 +318,7 @@ typedef int bool;
 	#endif
 #endif
 
-/* Autodetecting whether we should use fseeko/ftello. You can set this to 1 to force this
- * instead of falling back on fseek/ftell. */
+/* Autodetecting whether we should use fseeko/ftello. */
 #if DMC_UNRAR_DISABLE_STDIO != 1 && !defined(DMC_UNRAR_USE_FSEEKO_FTELLO)
 	#if defined(__APPLE__) && DMC_UNRAR_32BIT == 1
 		#define DMC_UNRAR_USE_FSEEKO_FTELLO 1
