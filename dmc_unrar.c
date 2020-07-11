@@ -641,6 +641,9 @@ dmc_unrar_return dmc_unrar_archive_open_mem(dmc_unrar_archive *archive,
  *  The func_alloc, func_realloc, func_free and opaque_mem fields may be set.
  *  All other fields must have been cleared.
  *
+ *  The stdio FILE will be taken over and will be closed when the archive is
+ *  closed with dmc_unrar_archive_close().
+ *
  *  @param  archive Pointer to the archive structure to use. Needs to be a valid
  *                  pointer, with the fields properly initialized and set.
  *  @param  file The stdio FILE structure to read out of.
