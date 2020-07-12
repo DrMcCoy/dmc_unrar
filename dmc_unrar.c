@@ -1,6 +1,6 @@
 /* dmc_unrar - A dependency-free, single-file FLOSS unrar library
  *
- * Copyright (c) 2017, 2019 by Sven Hesse (DrMcCoy) <drmccoy@drmccoy.de>
+ * Copyright (c) 2017, 2019-2020 by Sven Hesse (DrMcCoy) <drmccoy@drmccoy.de>
  *
  * dmc_unrar is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as
