@@ -59,6 +59,17 @@
  * <drmccoy@drmccoy.de>, or via the GitHub project page at
  * <https://github.com/DrMcCoy/dmc_unrar>.
  *
+ * This library has been tested on Linux (with glibc), Mac OS X 10.6 and
+ * Windows, all of them both 32-bit and 64-bit. All of the features and
+ * autodetection should work automagically on those systems. If you're
+ * using different operating systems or a different libc, you might need
+ * to extend the autodetection macros below or alternatively define the
+ * relevant feature flags yourself.
+ *
+ * If you do extend the autodetection macros, we'd like to merge your
+ * changes back. And if you're otherwise using dmc_unrar on uncommon
+ * systems, we'd certainly like to hear from you about how it went.
+ *
  * If you send patches and/or pull requests, please keep the style of
  * your changes similar to the existing style. Also note that dmc_unrar
  * should stay C89-clean-ish. This means that gcc and clang with the
