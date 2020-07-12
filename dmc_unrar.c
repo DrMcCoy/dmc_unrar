@@ -293,9 +293,6 @@ typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
-typedef unsigned long long size_t;
-
-#define SIZE_MAX ((size_t) -1)
 
 /* Only used by the PPMd decoder, so could be left out with PPMd disabled. */
 typedef uint64_t uintptr_t;
