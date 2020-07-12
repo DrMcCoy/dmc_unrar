@@ -246,6 +246,29 @@
 #define DMC_UNRAR_DISABLE_FILTERS 0
 #endif
 
+/* Do we have large file (>= 2GB) support? Can be defined to force enabling
+ * or disabling of large file support, or kept undefined to let the
+ * autodetection figure it out. The autodetection errs on being conservative,
+ * so see below for detail.
+ *
+ * There's two types of large files:
+ * - Files within archives that decompress to >= 2GB
+ * - Archives that are >= 2GB
+ *
+ * Archives that are >= 2GB can contain either small files or large files.
+ * Files within archives that decompress to >= 2GB can be within small archives
+ * (if they compress well) or large archives (if they don't).
+ *
+ * If we don't have large file support and are asked to extract a large file,
+ * the error DMC_UNRAR_FILE_UNSUPPORTED_LARGE will be returned instead. However,
+ * we can't properly detect if an archive itself is large without large file
+ * support, so this case will have to be caught by this library's user.
+ */
+#if 0
+#define DMC_HAS_LARGE_FILE_SUPPORT 1
+#define DMC_HAS_LARGE_FILE_SUPPORT 0
+#endif
+
 /* Initial capacity of our internal arrays. Larger values mean less
  * reallocations as new files are discovered in an archive, but wasted
  * memory on archives with few files. The arrays grow exponential, though. */
@@ -359,6 +382,60 @@ typedef DMC_UNRAR_OFFSET_T dmc_unrar_offset_t;
 	#else
 		#define DMC_UNRAR_USE_FSEEKO_FTELLO 0
 	#endif
+#endif
+
+/* Autodetection whether we have large file support. */
+#ifndef DMC_HAS_LARGE_FILE_SUPPORT
+	#if defined(__APPLE__)
+		/* On macOS, we should always have large file support, but we need to
+		 * use fseeko/ftello on 32-bit builds. */
+
+		#if DMC_UNRAR_64BIT == 1
+			#define DMC_HAS_LARGE_FILE_SUPPORT 1
+		#else
+			#if DMC_UNRAR_USE_FSEEKO_FTELLO == 1
+				#define DMC_HAS_LARGE_FILE_SUPPORT 1
+			#else
+				#define DMC_HAS_LARGE_FILE_SUPPORT 0
+			#endif
+		#endif
+
+	#elif defined(_WIN32)
+		/* On Windows, we should always have large file support with the WinAPI. */
+
+		#if DMC_UNRAR_DISABLE_WIN32 == 0
+			#define DMC_HAS_LARGE_FILE_SUPPORT 1
+		#else
+			#define DMC_HAS_LARGE_FILE_SUPPORT 0
+		#endif
+	#elif defined(__GLIBC__)
+		/* On glibc system (Linux), we should always have large file support on
+		 * 64-bit builds. On 32-bit builds, we need _FILE_OFFSET_BITS set to 64
+		 * and use fseeko/ftello. */
+
+		#if DMC_UNRAR_64BIT == 1
+			#define DMC_HAS_LARGE_FILE_SUPPORT 1
+		#else
+			#if defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS == 64 && DMC_UNRAR_USE_FSEEKO_FTELLO == 1
+				#define DMC_HAS_LARGE_FILE_SUPPORT 1
+			#else
+				#define DMC_HAS_LARGE_FILE_SUPPORT 0
+			#endif
+		#endif
+	#else
+		/* Otherwise, we have no clue. Assume we don't have large file support. */
+
+		#define DMC_HAS_LARGE_FILE_SUPPORT 0
+	#endif
+#endif
+
+/* Make sure our dmc_unrar_size_t and dmc_unrar_offset_t types are large enough. */
+#if DMC_HAS_LARGE_FILE_SUPPORT == 1
+	typedef unsigned char dmc_unrar_validate_size_t  [sizeof(dmc_unrar_size_t  )>=8 ? 1 : -1];
+	typedef unsigned char dmc_unrar_validate_offset_t[sizeof(dmc_unrar_offset_t)>=8 ? 1 : -1];
+#else
+	typedef unsigned char dmc_unrar_validate_size_t  [sizeof(dmc_unrar_size_t  )>=4 ? 1 : -1];
+	typedef unsigned char dmc_unrar_validate_offset_t[sizeof(dmc_unrar_offset_t)>=4 ? 1 : -1];
 #endif
 
 /* --- Windows-specific headers --- */
