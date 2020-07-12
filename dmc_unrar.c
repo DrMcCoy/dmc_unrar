@@ -32,13 +32,13 @@
  *   - Including delta, x86, ARM
  * - Solid archives (1.5, 2.0/2.6, 2.9/3.6, 5.0)
  * - SFX archives
+ * - Large files (>= 2GB)
  * - Validating extraction result against archive CRC-32
  * - Archive and file comments
  *
  * Features we don't support (in rough order from easiest to difficult)
  * - Unix owner/group info, NTFS permissions
  * - Symbolic links and hard links
- * - Large files (>= 2GB)
  * - Archives split over several volumes
  * - Encrypted files, encrypted archives
  *
@@ -91,12 +91,12 @@
  *
  * Someday, ????-??-?? (Version ?)
  * - Changed internal I/O interface to be more flexible
- * - Added Win32 direct file access for future large file support
- * - Added a macro to optionally use fseeko/ftello for future large file
- *   support, by default used on 32-bit macOS and glibc builds
+ * - Added Win32 direct file access
+ * - Wrapped FILE* for dmc_unrar_archive_open_file() on Windows
+ * - Added a macro to optionally use fseeko/ftello instead of fseek/ftell,
+ *   by default used on 32-bit macOS and 32-bit glibc builds
  * - Replaced size_t with our own type to help with large file support
- * - Wrapped FILE* for dmc_unrar_archive_open_file() on Windows, for
- *   large file support
+ * - Added support for large files (>= 2GB)
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -4076,9 +4076,11 @@ dmc_unrar_return dmc_unrar_file_is_supported(dmc_unrar_archive *archive, dmc_unr
 		    (file->method != DMC_UNRAR_METHOD_BEST))
 			return DMC_UNRAR_FILE_UNSUPPORTED_METHOD;
 
+#if DMC_HAS_LARGE_FILE_SUPPORT == 0
 		/* We don't support large files. */
 		if (file->file.uncompressed_size >= 0x7FFFFFFF)
 			return DMC_UNRAR_FILE_UNSUPPORTED_LARGE;
+#endif
 
 		/* We don't support split files. */
 		if (file->is_split)
