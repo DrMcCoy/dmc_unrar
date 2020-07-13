@@ -186,9 +186,9 @@
  * Set DMC_UNRAR_DISABLE_WIN32 to 0 to always use the WIN32 API for file IO.
  * Leave DMC_UNRAR_DISABLE_WIN32 unset to autodetect.
  *
- * When using the WIN32 API, dmc_unrar_archive_open_path() on Windows will
- * correct work with UTF-8 paths. Without it, it only supports plain ASCII
- * paths. */
+ * On Windows, dmc_unrar_is_rar_path() and dmc_unrar_archive_open_path()
+ * will only support plain ASCII paths without the WIN32 API. With the
+ * WIN32 API, they support full UTF-8 paths. */
 #if 0
 #define DMC_UNRAR_DISABLE_WIN32 1
 #define DMC_UNRAR_DISABLE_WIN32 0
@@ -600,6 +600,10 @@ bool dmc_unrar_is_rar_file(FILE *file);
 #endif /* DMC_UNRAR_DISABLE_STDIO */
 
 /** Detect whether the file at this path contains a RAR archive.
+ *
+ *  Please note that on Windows, full UTF-8 paths only work when using the WIN32 API
+ *  (see DMC_UNRAR_DISABLE_WIN32 above). Without the WIN32 API, only plain ASCII paths
+ *  are supported on Windows.
  *
  *  @param  path The path of the file to dmc_unrar_io_default_handler and read out of.
  *               This must be UTF-8.
