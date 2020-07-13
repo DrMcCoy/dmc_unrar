@@ -186,9 +186,9 @@
  * Set DMC_UNRAR_DISABLE_WIN32 to 0 to always use the WIN32 API for file IO.
  * Leave DMC_UNRAR_DISABLE_WIN32 unset to autodetect.
  *
- * On Windows, dmc_unrar_is_rar_path() and dmc_unrar_archive_open_path()
- * will only support plain ASCII paths without the WIN32 API. With the
- * WIN32 API, they support full UTF-8 paths. */
+ * On Windows, dmc_unrar_is_rar_path(), dmc_unrar_archive_open_path() and
+ * dmc_unrar_extract_file_to_path() will only support plain ASCII paths
+ * without the WIN32 API. With the WIN32 API, they support full UTF-8 paths. */
 #if 0
 #define DMC_UNRAR_DISABLE_WIN32 1
 #define DMC_UNRAR_DISABLE_WIN32 0
@@ -852,9 +852,13 @@ dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size
 
 /** Open a file and extract a RAR file entry into it.
  *
+ *  Please note that on Windows, full UTF-8 paths only work when using the WIN32 API
+ *  (see DMC_UNRAR_DISABLE_WIN32 above). Without the WIN32 API, only plain ASCII paths
+ *  are supported on Windows.
+ *
  *  @param  archive The archive to extract from.
  *  @param  index The index of the file entry to extract.
- *  @param  path The file to open and write into.
+ *  @param  path The file to open and write into. This must be UTF-8.
  *  @param  uncompressed_size If not NULL, the number of bytes written
  *          to the file will be stored here.
  *  @param  validate_crc If true, validate the uncompressed data against
