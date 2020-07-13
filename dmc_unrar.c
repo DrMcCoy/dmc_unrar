@@ -184,7 +184,11 @@
 
 /* Set DMC_UNRAR_DISABLE_WIN32 to 1 to never use the WIN32 API for file IO.
  * Set DMC_UNRAR_DISABLE_WIN32 to 0 to always use the WIN32 API for file IO.
- * Leave DMC_UNRAR_DISABLE_WIN32 unset to autodetect. */
+ * Leave DMC_UNRAR_DISABLE_WIN32 unset to autodetect.
+ *
+ * When using the WIN32 API, dmc_unrar_archive_open_path() on Windows will
+ * correct work with UTF-8 paths. Without it, it only supports plain ASCII
+ * paths. */
 #if 0
 #define DMC_UNRAR_DISABLE_WIN32 1
 #define DMC_UNRAR_DISABLE_WIN32 0
@@ -656,6 +660,10 @@ dmc_unrar_return dmc_unrar_archive_open_file(dmc_unrar_archive *archive, FILE *f
 /** Open this RAR archive from a path, opening the file with dmc_unrar_io_default_handler,
  *  and reading its block and file headers. The func_alloc, func_realloc, func_free and
  *  opaque_mem fields may be set. All other fields must have been cleared.
+ *
+ *  Please note that on Windows, full UTF-8 paths only work when using the WIN32 API
+ *  (see DMC_UNRAR_DISABLE_WIN32 above). Without the WIN32 API, only plain ASCII paths
+ *  are supported on Windows.
  *
  *  @param  archive Pointer to the archive structure to use. Needs to be a valid
  *                  pointer, with the fields properly initialized and set.
