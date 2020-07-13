@@ -4109,13 +4109,64 @@ dmc_unrar_return dmc_unrar_extract_file_to_file(dmc_unrar_archive *archive, size
 	return DMC_UNRAR_OK;
 }
 
+#if DMC_UNRAR_DISABLE_WIN32 != 1
+
+static FILE *dmc_unrar_win32_fopen_write(const char *path) {
+	FILE *file = NULL;
+
+	/* Assuming we have a UTF-8 path, we need to first convert this to UTF-16 */
+	int buf_size;
+	int result;
+
+#if DMC_UNRAR_DISABLE_MALLOC == 1
+	wchar_t buf[MAX_PATH];
+	buf_size = MAX_PATH;
+#else
+	wchar_t *buf;
+
+	/* Calculate the buffer size needed */
+	buf_size = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+	if (buf_size == 0)
+		return NULL;
+
+	/* Allocate that size in the buffer */
+	buf = DMC_UNRAR_MALLOC(buf_size * sizeof(wchar_t));
+	if (buf == NULL)
+		return NULL;
+#endif /* DMC_UNRAR_DISABLE_MALLOC */
+
+	/* Actually convert the data now */
+	result = MultiByteToWideChar(CP_UTF8, 0, path, -1, buf, buf_size);
+	if (result == 0)
+		goto end;
+
+	/* Actually open the file */
+	file = _wfopen(buf, L"wb");
+
+end:
+	/* Ensure the buffer is freed if we allocated it */
+#if DMC_UNRAR_DISABLE_MALLOC != 1
+	DMC_UNRAR_FREE(buf);
+#endif /* DMC_UNRAR_DISABLE_MALLOC */
+
+	return file;
+}
+
+#endif /* DMC_UNRAR_DISABLE_WIN32 */
+
 dmc_unrar_return dmc_unrar_extract_file_to_path(dmc_unrar_archive *archive, size_t index,
 	const char *path, size_t *uncompressed_size, bool validate_crc) {
 
 	dmc_unrar_return return_code;
-	FILE *file = NULL;
+	FILE *file;
 
-	if (!(file = fopen(path, "wb")))
+#if DMC_UNRAR_DISABLE_WIN32 == 1
+	file = fopen(path, "wb");
+#else
+	file = dmc_unrar_win32_fopen_write(path);
+#endif
+
+	if (!file)
 		return DMC_UNRAR_OPEN_FAIL;
 
 	return_code = dmc_unrar_extract_file_to_file(archive, index, file, uncompressed_size, validate_crc);
