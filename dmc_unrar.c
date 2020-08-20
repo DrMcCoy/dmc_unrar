@@ -89,7 +89,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version ?)
+ * Friday, 2020-07-21 (Version 1.7.0)
  * - Changed internal I/O interface to be more flexible
  * - Added Win32 direct file access
  * - Wrapped FILE* for dmc_unrar_archive_open_file() on Windows
@@ -97,6 +97,7 @@
  *   by default used on 32-bit macOS and 32-bit glibc builds
  * - Replaced size_t with our own type to help with large file support
  * - Added support for large files (>= 2GB)
+ * - Added version number #defines. Better late than never!
  *
  * Monday, 2019-08-12 (Version 1.6.0)
  * - Implemented the Itanium filter
@@ -463,6 +464,12 @@ typedef int              (*dmc_unrar_seek_func)(void *opaque, dmc_unrar_offset_t
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define DMC_UNRAR_VERSION "1.7.0"
+#define DMC_UNRAR_VERSION_MAJOR 1
+#define DMC_UNRAR_VERSION_MINOR 7
+#define DMC_UNRAR_VERSION_PATCH 0
+#define DMC_UNRAR_VERSION_FULL ( (DMC_UNRAR_VERSION_MAJOR * 100000) + (DMC_UNRAR_VERSION_MINOR * 10000) + (DMC_UNRAR_VERSION_PATCH) )
 
 /** The return code of a dmc_unrar operation. See dmc_unrar_strerror(). */
 typedef enum {
