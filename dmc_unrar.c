@@ -4209,7 +4209,7 @@ dmc_unrar_unicode_encoding dmc_unrar_unicode_detect_encoding(const void *data, d
 		return DMC_UNRAR_UNICODE_ENCODING_UNKNOWN;
 
 	/* BOM. */
-	if ((data_size >= 2) && ((data_size % 1) == 0))
+	if (data_size >= 2)
 		if ((bytes[0] == 0xFF) && (bytes[1] == 0xFE))
 			return DMC_UNRAR_UNICODE_ENCODING_UTF16LE;
 
@@ -4240,7 +4240,7 @@ dmc_unrar_size_t dmc_unrar_unicode_convert_utf16le_to_utf8(const void *utf16le_d
 		return 0;
 
 	/* Remove the BOM. */
-	if ((utf16le_size >= 2) && ((utf16le_size % 1) == 0)) {
+	if (utf16le_size >= 2) {
 		if ((bytes[0] == 0xFF) && (bytes[1] == 0xFE)) {
 			bytes += 2;
 			utf16le_size -= 2;
