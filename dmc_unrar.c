@@ -255,6 +255,15 @@
 #define DMC_UNRAR_DISABLE_FILTERS 0
 #endif
 
+/* Set DMC_UNRAR_DISABLE_HEADER_CRC_CHECK to 1 to accept RAR4 and RAR5 block
+ * headers whose stored CRC does not match. Off by default (i.e. enforcement
+ * is on): a bad header CRC causes dmc_unrar_archive_open() to fail with
+ * DMC_UNRAR_INVALID_DATA. Historical archives written by broken tools may
+ * need this opt-out. */
+#ifndef DMC_UNRAR_DISABLE_HEADER_CRC_CHECK
+#define DMC_UNRAR_DISABLE_HEADER_CRC_CHECK 0
+#endif
+
 /* Maximum number of file entries a single archive may declare. Caps the
  * growth of archive->internal_state->files during the open-time block
  * collection. Malformed archives can otherwise force the library to
@@ -1016,6 +1025,14 @@ typedef bool (*dmc_unrar_extract_callback_func)(void *opaque, void **buffer,
  *
  *  Extract into the buffer of buffer_size, calling callback every time the
  *  buffer has been filled (or all the input has been processed).
+ *
+ *  CRC coverage (when validate_crc is true): the stored file CRC-32 is
+ *  matched against the bytes that are passed to the callback. Decompression,
+ *  solid-chain drains, and RAR filter transformations (delta, x86, ARM,
+ *  etc.) all run before the CRC update; the callback and the CRC observe
+ *  the same bytes. A CRC mismatch returns DMC_UNRAR_FILE_CRC32_FAIL after
+ *  the callback has already seen every chunk, so callers that persist the
+ *  output eagerly should be prepared to discard it on that return code.
  *
  *  @param  archive The archive to extract from.
  *  @param  index The index of the file entry to extract.
@@ -2840,6 +2857,62 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 	return dmc_unrar_connect_solid(archive);
 }
 
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+/* Validate a RAR4 block-header CRC. The header runs [start_pos,
+   start_pos + header_size) with the 2-byte CRC field at start_pos; the
+   stored value is the low 16 bits of a CRC-32 over
+   [start_pos + 2, start_pos + header_size). Seeks back to the caller's
+   position on return so the parse resumes where it left off. */
+static dmc_unrar_return dmc_unrar_rar4_validate_header_crc(dmc_unrar_archive *archive,
+		const dmc_unrar_block_header *block) {
+	uint8_t stack_buf[256];
+	uint8_t *buf = stack_buf;
+	uint64_t span;
+	dmc_unrar_offset_t saved_pos;
+	dmc_unrar_return rc = DMC_UNRAR_OK;
+	uint32_t crc32;
+
+	if (block->header_size < 2)
+		return DMC_UNRAR_INVALID_DATA;
+
+	span = block->header_size - 2;
+	saved_pos = dmc_unrar_io_tell(&archive->io);
+
+	if (span > sizeof(stack_buf)) {
+		buf = (uint8_t *)dmc_unrar_malloc(&archive->alloc, (dmc_unrar_size_t)span, 1);
+		if (!buf)
+			return DMC_UNRAR_ALLOC_FAIL;
+	}
+
+	if (!dmc_unrar_io_seek(&archive->io, (dmc_unrar_offset_t)(block->start_pos + 2),
+	                       DMC_UNRAR_SEEK_SET)) {
+		rc = DMC_UNRAR_SEEK_FAIL;
+		goto done;
+	}
+
+	if (!dmc_unrar_io_read_checked(&archive->io, buf, (dmc_unrar_size_t)span)) {
+		rc = DMC_UNRAR_READ_FAIL;
+		goto done;
+	}
+
+	crc32 = dmc_unrar_crc32_calculate_from_mem(buf, (dmc_unrar_size_t)span);
+	if ((crc32 & 0xFFFF) != (block->crc & 0xFFFF))
+		rc = DMC_UNRAR_INVALID_DATA;
+
+done:
+	if (buf != stack_buf)
+		dmc_unrar_free(&archive->alloc, buf);
+	/* Restore position for the caller's subsequent reads. */
+	if (rc == DMC_UNRAR_OK) {
+		if (!dmc_unrar_io_seek(&archive->io, saved_pos, DMC_UNRAR_SEEK_SET))
+			rc = DMC_UNRAR_SEEK_FAIL;
+	} else {
+		(void)dmc_unrar_io_seek(&archive->io, saved_pos, DMC_UNRAR_SEEK_SET);
+	}
+	return rc;
+}
+#endif /* DMC_UNRAR_DISABLE_HEADER_CRC_CHECK */
+
 /** Read a RAR4 block header. */
 static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *archive,
 		dmc_unrar_block_header *block) {
@@ -2851,7 +2924,6 @@ static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *arch
 
 	block->start_pos = dmc_unrar_io_tell(&archive->io);
 
-	/* TODO: Validate the checksum. */
 	if (!dmc_unrar_io_read_uint16le(&archive->io, &crc))
 		return DMC_UNRAR_READ_FAIL;
 	if (!dmc_unrar_io_read_uint8(&archive->io, &type))
@@ -2870,6 +2942,14 @@ static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *arch
 	/* We just read 7 bytes, so.... */
 	if (block->header_size < 7)
 		return DMC_UNRAR_INVALID_DATA;
+
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+	{
+		dmc_unrar_return crc_rc = dmc_unrar_rar4_validate_header_crc(archive, block);
+		if (crc_rc != DMC_UNRAR_OK)
+			return crc_rc;
+	}
+#endif
 
 	/* Does the block have data attached, after the header?. */
 	{
@@ -3233,18 +3313,89 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 	return dmc_unrar_connect_solid(archive);
 }
 
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+/* Validate a RAR5 block-header CRC. Covers [crc_end_pos, start_pos + header_size):
+   the HeaderSize VLQ field followed by the HeaderSize bytes of header content.
+   The stored CRC is a full 32-bit CRC-32 (not truncated, unlike RAR4).
+
+   Streams the CRC through a fixed-size stack buffer rather than allocating
+   the full header span. A malicious archive can legitimately be large
+   (GiBs), so sizing a buffer against archive->io.size before the resource
+   caps apply is an attacker-controlled allocation. Rejecting end_pos past
+   the archive size also bounds how many bytes we ever read. Restores the
+   caller's stream position on return so the parse resumes where it left
+   off. */
+static dmc_unrar_return dmc_unrar_rar5_validate_header_crc(dmc_unrar_archive *archive,
+		const dmc_unrar_block_header *block, uint64_t crc_end_pos) {
+	uint8_t buf[256];
+	uint64_t end_pos, remaining;
+	dmc_unrar_offset_t saved_pos;
+	uint32_t crc32 = 0;
+
+	if (!dmc_unrar_u64_add_ok(block->start_pos, block->header_size, &end_pos))
+		return DMC_UNRAR_INVALID_DATA;
+	if (end_pos < crc_end_pos)
+		return DMC_UNRAR_INVALID_DATA;
+	/* A header that would extend past the archive stream is malformed by
+	   definition; rejecting here also caps the amount of data the loop
+	   below will read. */
+	if (end_pos > (uint64_t)archive->io.size)
+		return DMC_UNRAR_INVALID_DATA;
+
+	saved_pos = dmc_unrar_io_tell(&archive->io);
+
+	if (!dmc_unrar_io_seek(&archive->io, (dmc_unrar_offset_t)crc_end_pos,
+	                       DMC_UNRAR_SEEK_SET)) {
+		(void)dmc_unrar_io_seek(&archive->io, saved_pos, DMC_UNRAR_SEEK_SET);
+		return DMC_UNRAR_SEEK_FAIL;
+	}
+
+	remaining = end_pos - crc_end_pos;
+	while (remaining > 0) {
+		dmc_unrar_size_t chunk = (remaining > sizeof(buf))
+		                         ? sizeof(buf) : (dmc_unrar_size_t)remaining;
+		if (!dmc_unrar_io_read_checked(&archive->io, buf, chunk)) {
+			(void)dmc_unrar_io_seek(&archive->io, saved_pos, DMC_UNRAR_SEEK_SET);
+			return DMC_UNRAR_READ_FAIL;
+		}
+		crc32 = dmc_unrar_crc32_continue_from_mem(crc32, buf, chunk);
+		remaining -= chunk;
+	}
+
+	if (!dmc_unrar_io_seek(&archive->io, saved_pos, DMC_UNRAR_SEEK_SET))
+		return DMC_UNRAR_SEEK_FAIL;
+
+	return (crc32 == block->crc) ? DMC_UNRAR_OK : DMC_UNRAR_INVALID_DATA;
+}
+#endif /* DMC_UNRAR_DISABLE_HEADER_CRC_CHECK */
+
 /** Read a RAR5 block header. */
 static dmc_unrar_return dmc_unrar_rar5_read_block_header(dmc_unrar_archive *archive,
 	dmc_unrar_block_header *block) {
+
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+	uint64_t crc_end_pos;
+#endif
 
 	DMC_UNRAR_ASSERT(archive && block);
 
 	if (!dmc_unrar_io_read_uint32le(&archive->io, &block->crc))
 		return DMC_UNRAR_READ_FAIL;
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+	crc_end_pos = (uint64_t)dmc_unrar_io_tell(&archive->io);
+#endif
 	if (!dmc_unrar_rar5_read_number(&archive->io, &block->header_size))
 		return DMC_UNRAR_READ_FAIL;
 
 	block->start_pos = dmc_unrar_io_tell(&archive->io);
+
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+	{
+		dmc_unrar_return crc_rc = dmc_unrar_rar5_validate_header_crc(archive, block, crc_end_pos);
+		if (crc_rc != DMC_UNRAR_OK)
+			return crc_rc;
+	}
+#endif
 
 	if (!dmc_unrar_rar5_read_number(&archive->io, &block->type))
 		return DMC_UNRAR_READ_FAIL;
