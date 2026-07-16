@@ -3335,6 +3335,12 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 			if (block->type == DMC_UNRAR_BLOCK5_TYPE_END)
 				break;
 
+			/* The archive has encrypted headers. Every block after this
+			   one (including file headers) is ciphertext, which we have
+			   no way to read without the password. */
+			if (block->type == DMC_UNRAR_BLOCK5_TYPE_ENCRYPTION)
+				return DMC_UNRAR_ARCHIVE_UNSUPPORTED_ENCRYPTED;
+
 			/* It's a file. */
 			if (block->type == DMC_UNRAR_BLOCK5_TYPE_FILE) {
 				if (state->file_count >= (dmc_unrar_size_t)DMC_UNRAR_MAX_FILE_COUNT)
