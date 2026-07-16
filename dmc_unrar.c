@@ -95,6 +95,7 @@
  *   - Fixed RAR5 solid extraction
  *   - Added support for cancellation
  *   - Improved performance of solid extraction by caching offsets
+ *   - Set some default limits to prevent zip bombs
  *
  * Friday, 2020-07-21 (Version 1.7.0)
  * - Changed internal I/O interface to be more flexible
@@ -252,6 +253,40 @@
  * defaults tries a few of them on common files formats, like JPEGs. */
 #ifndef DMC_UNRAR_DISABLE_FILTERS
 #define DMC_UNRAR_DISABLE_FILTERS 0
+#endif
+
+/* Maximum number of file entries a single archive may declare. Caps the
+ * growth of archive->internal_state->files during the open-time block
+ * collection. Malformed archives can otherwise force the library to
+ * allocate entries for millions of bogus files. */
+#ifndef DMC_UNRAR_MAX_FILE_COUNT
+#define DMC_UNRAR_MAX_FILE_COUNT (1000000u)
+#endif
+
+/* Maximum declared uncompressed size, in bytes, for any single file entry.
+ * Rejected at open time. 16 GiB is generous for legitimate archives. */
+#ifndef DMC_UNRAR_MAX_FILE_SIZE
+#define DMC_UNRAR_MAX_FILE_SIZE ((uint64_t)16 * 1024u * 1024u * 1024u)
+#endif
+
+/* Cumulative cap on declared uncompressed size across every entry in the
+ * archive. Rejected at open time on the running total. */
+#ifndef DMC_UNRAR_MAX_TOTAL_SIZE
+#define DMC_UNRAR_MAX_TOTAL_SIZE ((uint64_t)256 * 1024u * 1024u * 1024u)
+#endif
+
+/* Maximum allowed uncompressed / compressed ratio for any single entry.
+ * A STORE entry is 1:1 and always passes. Classic zip-bomb territory
+ * hits 1000:1 and up. */
+#ifndef DMC_UNRAR_MAX_COMPRESSION_RATIO
+#define DMC_UNRAR_MAX_COMPRESSION_RATIO (1000u)
+#endif
+
+/* Maximum archive-declared PPMd heap size, in MiB. The RAR5 format caps
+ * the declared value at 256 MiB; rejecting anything beyond this cap
+ * prevents large PPMd suballocator allocations on malformed input. */
+#ifndef DMC_UNRAR_MAX_PPMD_SIZE_MB
+#define DMC_UNRAR_MAX_PPMD_SIZE_MB (32u)
 #endif
 
 /* Do we have large file (>= 2GB) support? Can be defined to force enabling
@@ -1475,6 +1510,10 @@ struct dmc_unrar_internal_state_tag {
 	dmc_unrar_file_block *files;    /**< All files (and directories) in this RAR archive. */
 	dmc_unrar_size_t file_capacity; /**< Memory capacity of the files array. */
 
+	/** Running sum of declared uncompressed sizes across all file entries,
+	 *  used to enforce DMC_UNRAR_MAX_TOTAL_SIZE at open time. */
+	uint64_t total_uncompressed_size;
+
 	/** Saved unpack context, for sequential solid block unpacking. */
 	dmc_unrar_rar_context *unpack_context;
 };
@@ -2633,6 +2672,49 @@ static dmc_unrar_return dmc_unrar_cancel_check(dmc_unrar_archive *archive) {
 	return DMC_UNRAR_OK;
 }
 
+/* Enforce the declared-size caps for one file entry: per-file size, running
+   cumulative total, and compression ratio. Updates the running total on
+   success. Returns DMC_UNRAR_INVALID_DATA on any cap breach. */
+static dmc_unrar_return dmc_unrar_check_file_caps(dmc_unrar_archive *archive,
+		uint64_t compressed_size, uint64_t uncompressed_size) {
+
+	uint64_t new_total;
+
+	if (uncompressed_size > (uint64_t)DMC_UNRAR_MAX_FILE_SIZE)
+		return DMC_UNRAR_INVALID_DATA;
+
+	if (!dmc_unrar_u64_add_ok(archive->internal_state->total_uncompressed_size,
+	                          uncompressed_size, &new_total))
+		return DMC_UNRAR_INVALID_DATA;
+	if (new_total > (uint64_t)DMC_UNRAR_MAX_TOTAL_SIZE)
+		return DMC_UNRAR_INVALID_DATA;
+
+	/* Ratio check. Only meaningful when the entry actually has
+	   compressed data; symlinks and similar legitimately have
+	   compressed_size == 0 with non-zero uncompressed_size (the
+	   uncompressed "size" is the symlink target length, stored in
+	   the header, not in a data stream).
+
+	   Use an overflow-checked multiplication rather than integer
+	   division: floor-division would let a claim of e.g. 2001 : 2
+	   sneak past a 1000:1 cap because 2001 / 2 == 1000. If
+	   compressed_size * max_ratio overflows uint64_t then no
+	   representable uncompressed_size can exceed the true threshold,
+	   so the check trivially passes. */
+	if (uncompressed_size > 0 && compressed_size > 0) {
+		uint64_t threshold;
+		if (dmc_unrar_u64_mul_ok(compressed_size,
+		                         (uint64_t)DMC_UNRAR_MAX_COMPRESSION_RATIO,
+		                         &threshold)) {
+			if (uncompressed_size > threshold)
+				return DMC_UNRAR_INVALID_DATA;
+		}
+	}
+
+	archive->internal_state->total_uncompressed_size = new_total;
+	return DMC_UNRAR_OK;
+}
+
 static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *archive,
 	dmc_unrar_block_header *block);
 static dmc_unrar_return dmc_unrar_rar4_read_archive_header(dmc_unrar_archive *archive,
@@ -2728,16 +2810,24 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 
 			/* It's a file. */
 			if (block->type == DMC_UNRAR_BLOCK4_TYPE_FILE) {
+				if (state->file_count >= (dmc_unrar_size_t)DMC_UNRAR_MAX_FILE_COUNT)
+					return DMC_UNRAR_INVALID_DATA;
 				if (!dmc_unrar_grow_files(archive))
 					return DMC_UNRAR_ALLOC_FAIL;
 
 				/* Read the rest of the file header. */
 				{
 					dmc_unrar_file_block *file = &state->files[state->file_count - 1];
+					dmc_unrar_return caps;
 
 					const dmc_unrar_return read_file = dmc_unrar_rar4_read_file_header(archive, block, file, true);
 					if (read_file != DMC_UNRAR_OK)
 						return read_file;
+
+					caps = dmc_unrar_check_file_caps(archive,
+						file->file.compressed_size, file->file.uncompressed_size);
+					if (caps != DMC_UNRAR_OK)
+						return caps;
 				}
 			}
 
@@ -3106,16 +3196,24 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 
 			/* It's a file. */
 			if (block->type == DMC_UNRAR_BLOCK5_TYPE_FILE) {
+				if (state->file_count >= (dmc_unrar_size_t)DMC_UNRAR_MAX_FILE_COUNT)
+					return DMC_UNRAR_INVALID_DATA;
 				if (!dmc_unrar_grow_files(archive))
 					return DMC_UNRAR_ALLOC_FAIL;
 
 				/* Read the rest of the file header. */
 				{
 					dmc_unrar_file_block *file = &state->files[state->file_count - 1];
+					dmc_unrar_return caps;
 
 					const dmc_unrar_return read_file = dmc_unrar_rar5_read_file_header(archive, block, file);
 					if (read_file != DMC_UNRAR_OK)
 						return read_file;
+
+					caps = dmc_unrar_check_file_caps(archive,
+						file->file.compressed_size, file->file.uncompressed_size);
+					if (caps != DMC_UNRAR_OK)
+						return caps;
 				}
 			}
 
@@ -6812,8 +6910,11 @@ static dmc_unrar_return dmc_unrar_rar30_init_ppmd(dmc_unrar_rar30_context *ctx) 
 	const uint8_t flags = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 7);
 
 	dmc_unrar_size_t heap_size_mb = DMC_UNRAR_SIZE_MAX;
-	if (flags & 0x20)
+	if (flags & 0x20) {
 		heap_size_mb = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8) + 1;
+		if (heap_size_mb > (dmc_unrar_size_t)DMC_UNRAR_MAX_PPMD_SIZE_MB)
+			return DMC_UNRAR_INVALID_DATA;
+	}
 
 	if (flags & 0x40)
 		ctx->ppmd_escape = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
