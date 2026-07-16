@@ -94,6 +94,7 @@
  * - Pulled in several changes from itch.io's fork (thanks to leaf corcoran!):
  *   - Fixed RAR5 solid extraction
  *   - Added support for cancellation
+ *   - Improved performance of solid extraction by caching offsets
  *
  * Friday, 2020-07-21 (Version 1.7.0)
  * - Changed internal I/O interface to be more flexible
@@ -1450,6 +1451,7 @@ struct dmc_unrar_file_block_tag {
 	dmc_unrar_file_block *solid_start; /**< The first file entry in a solid block. */
 	dmc_unrar_file_block *solid_prev;  /**< The previous file entry in a solid block. */
 	dmc_unrar_file_block *solid_next;  /**< The next file entry in a solid block. */
+	dmc_unrar_size_t solid_input_start_bits; /**< Packed-bit offset of this file within its solid block. */
 
 	dmc_unrar_file file; /**< Public file structure. */
 };
@@ -2595,12 +2597,14 @@ static dmc_unrar_return dmc_unrar_rar4_read_file_header(dmc_unrar_archive *archi
 	dmc_unrar_block_header *block, dmc_unrar_file_block *file, bool modify_block);
 
 /** Connect the file entries in solid blocks together. */
-static void dmc_unrar_connect_solid(dmc_unrar_archive *archive) {
+static dmc_unrar_return dmc_unrar_connect_solid(dmc_unrar_archive *archive) {
 	dmc_unrar_internal_state *state = archive->internal_state;
 	dmc_unrar_file_block *file = NULL, *start = NULL, *prev = NULL;
 
 	dmc_unrar_size_t i;
 	for (i = 0, file = state->files; i < state->file_count; i++, file++) {
+		file->solid_input_start_bits = 0;
+
 		if (!file->is_solid) {
 			file->solid_start = file;
 			file->solid_prev  = NULL;
@@ -2616,11 +2620,24 @@ static void dmc_unrar_connect_solid(dmc_unrar_archive *archive) {
 		file->solid_prev  = prev;
 		file->solid_next  = NULL;
 
-		if (prev)
+		if (prev) {
+			dmc_unrar_size_t prev_compressed_bits;
+
+			if (prev->file.compressed_size > (uint64_t)(DMC_UNRAR_SIZE_MAX / 8))
+				return DMC_UNRAR_INVALID_DATA;
+
+			prev_compressed_bits = (dmc_unrar_size_t)prev->file.compressed_size * 8;
+			if (prev->solid_input_start_bits > DMC_UNRAR_SIZE_MAX - prev_compressed_bits)
+				return DMC_UNRAR_INVALID_DATA;
+
+			file->solid_input_start_bits = prev->solid_input_start_bits + prev_compressed_bits;
 			prev->solid_next = file;
+		}
 
 		prev = file;
 	}
+
+	return DMC_UNRAR_OK;
 }
 
 /** Run through the archive and collect all blocks (and files) in a RAR4 archive. */
@@ -2684,9 +2701,7 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 		}
 	}
 
-	dmc_unrar_connect_solid(archive);
-
-	return DMC_UNRAR_OK;
+	return dmc_unrar_connect_solid(archive);
 }
 
 /** Read a RAR4 block header. */
@@ -3071,9 +3086,7 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 		}
 	}
 
-	dmc_unrar_connect_solid(archive);
-
-	return DMC_UNRAR_OK;
+	return dmc_unrar_connect_solid(archive);
 }
 
 /** Read a RAR5 block header. */
@@ -4943,20 +4956,9 @@ static dmc_unrar_return dmc_unrar_rar_context_init(dmc_unrar_rar_context *ctx,
 	   use current_file_start in unpacked-output space. Keep those bases
 	   separate for solid archives where file chunks have different
 	   compressed and uncompressed sizes. */
-	{
-		dmc_unrar_file_block *part = file->solid_start;
-		while (part && (part != file)) {
-			if (part->file.compressed_size > (uint64_t)(DMC_UNRAR_SIZE_MAX / 8))
-				return DMC_UNRAR_INVALID_DATA;
-			if (ctx->current_input_start_bits > DMC_UNRAR_SIZE_MAX - (dmc_unrar_size_t)part->file.compressed_size * 8)
-				return DMC_UNRAR_INVALID_DATA;
-
-			ctx->current_input_start_bits += (dmc_unrar_size_t)part->file.compressed_size * 8;
-			part = part->solid_next;
-		}
-		if (!part)
-			return DMC_UNRAR_FILE_SOLID_BROKEN;
-	}
+	if (!file->solid_start)
+		return DMC_UNRAR_FILE_SOLID_BROKEN;
+	ctx->current_input_start_bits = file->solid_input_start_bits;
 
 	if (!dmc_unrar_io_seek(&archive->io, file->start_pos, DMC_UNRAR_SEEK_SET))
 		return DMC_UNRAR_SEEK_FAIL;
