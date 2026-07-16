@@ -1583,13 +1583,20 @@ static bool dmc_unrar_u64_mul_ok(uint64_t a, uint64_t b, uint64_t *out) {
 
 /* .--- Default allocation functions using malloc/realloc/free */
 static void *dmc_unrar_def_alloc_func(void *opaque, dmc_unrar_size_t items, dmc_unrar_size_t size) {
-	(void)opaque; (void)items; (void)size;
+	(void)opaque;
+
+	if (!dmc_unrar_size_mul_ok(items, size))
+		return NULL;
 
 	return DMC_UNRAR_MALLOC(items * size);
 }
 
 static void *dmc_unrar_def_realloc_func(void *opaque, void *address, dmc_unrar_size_t items, dmc_unrar_size_t size) {
-	(void)opaque; (void)address; (void)items; (void)size;
+	(void)opaque;
+
+	if (!dmc_unrar_size_mul_ok(items, size))
+		return NULL;
+
 	return DMC_UNRAR_REALLOC(address, items * size);
 }
 
