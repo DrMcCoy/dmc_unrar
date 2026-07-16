@@ -1479,6 +1479,52 @@ struct dmc_unrar_internal_state_tag {
 	dmc_unrar_rar_context *unpack_context;
 };
 
+/* .--- Checked arithmetic helpers
+ *
+ * Overflow-checked primitives used throughout the parser and IO layers.
+ * Kept here (early in the file) so all downstream code -- including the
+ * sub-reader seek path -- can call them without forward declarations.
+ *
+ * Naming: <type>_<op>_ok. Add/mul helpers return false on overflow. The
+ * add helpers and the u64 mul helper write the result through an
+ * out-pointer; dmc_unrar_size_mul_ok predates this shape and callers
+ * still do the multiply after the check.
+ */
+
+/* Returns true if items*size fits in dmc_unrar_size_t without wrapping. */
+static bool dmc_unrar_size_mul_ok(dmc_unrar_size_t items, dmc_unrar_size_t size) {
+	if (items == 0 || size == 0)
+		return true;
+	return size <= DMC_UNRAR_SIZE_MAX / items;
+}
+
+/* Compute a + b in size_t, returning false on unsigned overflow. */
+static bool dmc_unrar_size_add_ok(dmc_unrar_size_t a, dmc_unrar_size_t b, dmc_unrar_size_t *out) {
+	dmc_unrar_size_t r = a + b;
+	if (r < a)
+		return false;
+	*out = r;
+	return true;
+}
+
+/* Compute a + b in 64 bits, returning false on unsigned overflow. */
+static bool dmc_unrar_u64_add_ok(uint64_t a, uint64_t b, uint64_t *out) {
+	uint64_t r = a + b;
+	if (r < a)
+		return false;
+	*out = r;
+	return true;
+}
+
+/* Compute a * b in 64 bits, returning false on unsigned overflow. */
+static bool dmc_unrar_u64_mul_ok(uint64_t a, uint64_t b, uint64_t *out) {
+	if (a != 0 && b > (uint64_t)(~(uint64_t)0) / a)
+		return false;
+	*out = a * b;
+	return true;
+}
+/* '--- */
+
 /* .--- Default allocation functions using malloc/realloc/free */
 static void *dmc_unrar_def_alloc_func(void *opaque, dmc_unrar_size_t items, dmc_unrar_size_t size) {
 	(void)opaque; (void)items; (void)size;
