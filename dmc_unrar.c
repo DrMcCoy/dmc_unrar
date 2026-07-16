@@ -96,6 +96,8 @@
  *   - Added support for cancellation
  *   - Improved performance of solid extraction by caching offsets
  *   - Set some default limits to prevent zip bombs
+ *   - Added loads of bounds and otherwise safety checks
+ *   - Added several tuneable security checks
  *
  * Friday, 2020-07-21 (Version 1.7.0)
  * - Changed internal I/O interface to be more flexible
@@ -304,6 +306,17 @@
  * cleans up its temp file and returns DMC_UNRAR_FILE_EXISTS. */
 #ifndef DMC_UNRAR_REJECT_OVERWRITE
 #define DMC_UNRAR_REJECT_OVERWRITE 0
+#endif
+
+/* Maximum LZSS dictionary (sliding window) size the library will
+ * allocate per extraction, in bytes. Malformed archives can claim up to
+ * 4 GiB in their RAR5 header; without a cap here the decompressor
+ * allocates that memory on first extract. 256 MiB is a conservative
+ * default resource limit for typical use, not a format limit. Override
+ * to raise or lower if your workload demands it. Files declaring a
+ * larger dictionary return DMC_UNRAR_INVALID_DATA. */
+#ifndef DMC_UNRAR_MAX_DICT_SIZE
+#define DMC_UNRAR_MAX_DICT_SIZE (256u * 1024u * 1024u)
 #endif
 
 /* Maximum number of file entries a single archive may declare. Caps the
@@ -3764,18 +3777,55 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 	if (!dmc_unrar_rar5_read_number(&archive->io, &file->name_size))
 		return DMC_UNRAR_READ_FAIL;
 
+	/* Reject absurd name_size values. A malformed 64-bit varint here
+	   would otherwise wrap the extra-field walker's pos arithmetic
+	   below and turn the parse into an unbounded loop. */
+	if (file->name_size > (uint64_t)DMC_UNRAR_RAR5_NAME_MAX_LENGTH)
+		return DMC_UNRAR_INVALID_DATA;
+
 	/* The filename would be here now. Remember the offset. */
 	file->name_offset = dmc_unrar_io_tell(&archive->io);
 
 	file->is_encrypted = false;
 	file->is_link = dmc_unrar_rar_file_is_link(file);
 
+	{
+		/* Validate header layout: the block header is
+		     [fixed fields | name_size bytes | extra_size bytes]
+		   so header_end = start_pos + header_size, name_end must land
+		   at exactly header_end - extra_size, and the extra area is the
+		   final extra_size bytes of the header.
+
+		   Any mismatch is a malformed archive. Without these checks a
+		   file entry could, for example, claim a large name that runs
+		   past the header (making dmc_unrar_get_filename() return bytes
+		   from the following file data) or set name_end inside the
+		   declared extra area (making the walker below re-parse name
+		   bytes as records, or skip declared records entirely). */
+		uint64_t header_end, name_end;
+
+		if (!dmc_unrar_u64_add_ok(block->start_pos, block->header_size, &header_end))
+			return DMC_UNRAR_INVALID_DATA;
+		if (!dmc_unrar_u64_add_ok(file->name_offset, file->name_size, &name_end))
+			return DMC_UNRAR_INVALID_DATA;
+		if (name_end > header_end)
+			return DMC_UNRAR_INVALID_DATA;
+		/* extra_size must be exactly the gap between name_end and
+		   header_end; this covers the no-extras case (gap == 0) and
+		   the with-extras case in one expression. */
+		if (block->extra_size != header_end - name_end)
+			return DMC_UNRAR_INVALID_DATA;
+	}
+
 	if (block->extra_size) {
 		const uint64_t extra_end = block->start_pos + block->header_size;
-		uint64_t pos = dmc_unrar_io_tell(&archive->io) + file->name_size;
+		/* By the invariants just checked: extra_end == header_end and
+		   name_offset + name_size == extra_end - extra_size, i.e. the
+		   walker starts exactly at the extra area. */
+		uint64_t pos = file->name_offset + file->name_size;
 
 		while (pos < extra_end) {
-			uint64_t size, type;
+			uint64_t size, type, record_end, pos_after_size;
 
 			if (!dmc_unrar_io_seek(&archive->io, pos, DMC_UNRAR_SEEK_SET))
 				return DMC_UNRAR_SEEK_FAIL;
@@ -3783,10 +3833,26 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 			if (!dmc_unrar_rar5_read_number(&archive->io, &size))
 				return DMC_UNRAR_READ_FAIL;
 
-			pos = dmc_unrar_io_tell(&archive->io);
+			pos_after_size = dmc_unrar_io_tell(&archive->io);
+
+			/* `size` is the length of the remainder of the record
+			   (type + data), not counting the size varint itself. The
+			   record must be non-empty (a zero-size record has no room
+			   for the mandatory type field — otherwise we'd be reading
+			   the type from outside the record and, at the tail of the
+			   extra area, outside the block header entirely). The
+			   record also has to fit inside the declared extra area. */
+			if (!dmc_unrar_u64_add_ok(pos_after_size, size, &record_end))
+				return DMC_UNRAR_INVALID_DATA;
+			if (record_end <= pos_after_size || record_end > extra_end)
+				return DMC_UNRAR_INVALID_DATA;
 
 			if (!dmc_unrar_rar5_read_number(&archive->io, &type))
 				return DMC_UNRAR_READ_FAIL;
+
+			/* The type varint must fit inside the record. */
+			if ((uint64_t)dmc_unrar_io_tell(&archive->io) > record_end)
+				return DMC_UNRAR_INVALID_DATA;
 
 			switch (type) {
 				case DMC_UNRAR_FILE5_PROPERTY_ENCRYPTION:
@@ -3801,7 +3867,10 @@ static dmc_unrar_return dmc_unrar_rar5_read_file_header(dmc_unrar_archive *archi
 					break;
 			}
 
-			pos += size;
+			/* Jump to the next record. record_end > pos_after_size >
+			   pos (the size varint consumed at least one byte), so
+			   the loop is guaranteed to advance. */
+			pos = record_end;
 		}
 	}
 
@@ -5815,6 +5884,13 @@ typedef struct dmc_unrar_lzss_tag {
 	dmc_unrar_size_t copy_offset; /**< Overhang copy offset. */
 	dmc_unrar_size_t copy_size;   /**< Overhang copy size. */
 
+	/** Set when dmc_unrar_lzss_emit_copy() is asked to copy from before
+	    the start of the stream (malformed back-reference). Each RAR-
+	    version decompress loop checks this after decoding a symbol and
+	    fails with DMC_UNRAR_INVALID_DATA, so the caller gets a clean
+	    error instead of corrupted output. */
+	bool error;
+
 } dmc_unrar_lzss;
 
 /** Create an LZSS decoder, allocating a window buffer of the specified size (must be a power of 2!). */
@@ -6630,6 +6706,11 @@ static dmc_unrar_return dmc_unrar_rar15_decompress(dmc_unrar_rar15_context *ctx)
 		if (return_code != DMC_UNRAR_OK)
 			return return_code;
 
+		/* A previous symbol produced an out-of-window back-reference.
+		   Fail the decompress cleanly instead of producing garbage. */
+		if (ctx->ctx->lzss.error)
+			return DMC_UNRAR_INVALID_DATA;
+
 		if (dmc_unrar_lzss_has_overhang(&ctx->ctx->lzss)) {
 			ctx->ctx->buffer_offset = dmc_unrar_lzss_emit_copy_overhang(&ctx->ctx->lzss, ctx->ctx->buffer,
 			                          ctx->ctx->buffer_size, ctx->ctx->buffer_offset, NULL);
@@ -7196,6 +7277,9 @@ static dmc_unrar_return dmc_unrar_rar20_decompress(dmc_unrar_rar20_context *ctx)
 		if (return_code != DMC_UNRAR_OK)
 			return return_code;
 
+		if (ctx->ctx->lzss.error)
+			return DMC_UNRAR_INVALID_DATA;
+
 		if (dmc_unrar_lzss_has_overhang(&ctx->ctx->lzss)) {
 			ctx->ctx->buffer_offset = dmc_unrar_lzss_emit_copy_overhang(&ctx->ctx->lzss, ctx->ctx->buffer,
 			                          ctx->ctx->buffer_size, ctx->ctx->buffer_offset, NULL);
@@ -7732,11 +7816,15 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 			continue;
 		}
 
-		/* Now we should have filters and be at the first filter position. */
+		/* Now we should have filters and be at the first filter position.
+		   A malformed archive can point a filter at an offset behind the
+		   current decode position; treat that as invalid data rather than
+		   hitting the assert. */
 
 		DMC_UNRAR_ASSERT(!dmc_unrar_filters_empty(&ctx->filters));
 		DMC_UNRAR_ASSERT(dmc_unrar_filters_get_first_length(&ctx->filters) > 0);
-		DMC_UNRAR_ASSERT(current_offset == dmc_unrar_filters_get_first_offset(&ctx->filters));
+		if (current_offset != dmc_unrar_filters_get_first_offset(&ctx->filters))
+			return DMC_UNRAR_INVALID_DATA;
 
 		/* Decode into the filter memory. */
 
@@ -7752,7 +7840,13 @@ static dmc_unrar_return dmc_unrar_rar30_decompress(dmc_unrar_rar30_context *ctx)
 			if (return_code != DMC_UNRAR_OK)
 				return return_code;
 
-			DMC_UNRAR_ASSERT(ctx->filter_offset == filter_length);
+			/* The block decoder can return OK on a truncated LZ stream that
+			   ran dry before filling the whole filter input. A malformed
+			   archive can trigger this; trusting the length invariant
+			   aborts under `-DNDEBUG`-less builds, so treat the short fill
+			   as invalid data. */
+			if (ctx->filter_offset != filter_length)
+				return DMC_UNRAR_INVALID_DATA;
 		}
 
 		/* We have a filter and its memory data now. */
@@ -7799,6 +7893,9 @@ static dmc_unrar_return dmc_unrar_rar30_decompress_block(dmc_unrar_rar30_context
 		return_code = dmc_unrar_cancel_check(ctx->ctx->archive);
 		if (return_code != DMC_UNRAR_OK)
 			return return_code;
+
+		if (ctx->ctx->lzss.error)
+			return DMC_UNRAR_INVALID_DATA;
 
 		if (dmc_unrar_bs_has_error(&ctx->ctx->bs))
 			break;
@@ -8585,11 +8682,13 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 			continue;
 		}
 
-		/* Now we should have filters and be at the first filter position. */
+		/* Now we should have filters and be at the first filter position.
+		   Symmetric guard to the rar30 path above. */
 
 		DMC_UNRAR_ASSERT(!dmc_unrar_filters_empty(&ctx->filters));
 		DMC_UNRAR_ASSERT(dmc_unrar_filters_get_first_length(&ctx->filters) > 0);
-		DMC_UNRAR_ASSERT(current_offset == dmc_unrar_filters_get_first_offset(&ctx->filters));
+		if (current_offset != dmc_unrar_filters_get_first_offset(&ctx->filters))
+			return DMC_UNRAR_INVALID_DATA;
 
 		/* Decode into the filter memory. */
 
@@ -8605,7 +8704,9 @@ static dmc_unrar_return dmc_unrar_rar50_decompress(dmc_unrar_rar50_context *ctx)
 			if (return_code != DMC_UNRAR_OK)
 				return return_code;
 
-			DMC_UNRAR_ASSERT(ctx->filter_offset == filter_length);
+			/* Same short-fill guard as the rar30 path above. */
+			if (ctx->filter_offset != filter_length)
+				return DMC_UNRAR_INVALID_DATA;
 		}
 
 		/* We have a filter and its memory data now. */
@@ -8652,6 +8753,9 @@ static dmc_unrar_return dmc_unrar_rar50_decompress_block(dmc_unrar_rar50_context
 		return_code = dmc_unrar_cancel_check(ctx->ctx->archive);
 		if (return_code != DMC_UNRAR_OK)
 			return return_code;
+
+		if (ctx->ctx->lzss.error)
+			return DMC_UNRAR_INVALID_DATA;
 
 		if (dmc_unrar_bs_has_error(&ctx->ctx->bs))
 			break;
@@ -8736,7 +8840,11 @@ static dmc_unrar_return dmc_unrar_rar50_read_block_header(dmc_unrar_rar50_contex
 		for (i = 0; i < size_count; i++) {
 			const uint8_t value = dmc_unrar_bs_read_bits(&ctx->ctx->bs, 8);
 
-			block_size += value << (i * 8);
+			/* Cast to dmc_unrar_size_t before shifting: plain `value << 24`
+			   would promote to int and overflow when the high bit is set,
+			   which UBSan flags. size_count maxes at 4, so the shift count
+			   stays inside 0..24 either way. */
+			block_size += (dmc_unrar_size_t)value << (i * 8);
 
 			calculated_checksum ^= value;
 		}
@@ -9815,6 +9923,11 @@ static uint32_t dmc_unrar_huff_get_symbol(dmc_unrar_huff *huff, dmc_unrar_bs *bs
 
 	*err = DMC_UNRAR_OK;
 
+	if (!huff->tree || !huff->table || huff->table_size == 0) {
+		*err = DMC_UNRAR_HUFF_INVALID_CODE;
+		return 0xFFFFFFFF;
+	}
+
 	/* If we want to use the table, we need to make sure we have at least
 	 * as many bits left in the bitstream as the table is deep. Otherwise,
 	 * we're going to peek past the end of the bitstream. */
@@ -9876,6 +9989,13 @@ static dmc_unrar_return dmc_unrar_lzss_create(dmc_unrar_alloc *alloc, dmc_unrar_
 
 	DMC_UNRAR_ASSERT(alloc && lzss);
 	DMC_UNRAR_ASSERT(window_size && dmc_unrar_is_power_2(window_size));
+
+	/* Reject dictionaries past the configured cap. A RAR5 archive can
+	   legally claim up to 4 GiB here; refusing to allocate past
+	   DMC_UNRAR_MAX_DICT_SIZE is the primary defense against
+	   archive-driven OOM. */
+	if (window_size > (dmc_unrar_size_t)DMC_UNRAR_MAX_DICT_SIZE)
+		return DMC_UNRAR_INVALID_DATA;
 
 	DMC_UNRAR_CLEAR_OBJ(*lzss);
 
@@ -9941,7 +10061,18 @@ static dmc_unrar_size_t dmc_unrar_lzss_emit_copy(dmc_unrar_lzss *lzss, uint8_t *
 		dmc_unrar_size_t *running_output_count) {
 
 	DMC_UNRAR_ASSERT(lzss);
-	DMC_UNRAR_ASSERT(copy_offset <= lzss->window_offset);
+
+	/* A malformed compressed stream can ask us to copy from before the
+	   start of the window. The window-mask read below would still be
+	   memory-safe (mask forces the index back into the buffer) but the
+	   bytes we'd emit are garbage. Flag the error for the enclosing
+	   decompress loop to pick up and don't emit anything for this copy. */
+	if (copy_offset > lzss->window_offset) {
+		lzss->error = true;
+		lzss->copy_offset = 0;
+		lzss->copy_size   = 0;
+		return buffer_offset;
+	}
 
 	/* Convert relative offset into absolute output buffer offset. */
 	copy_offset = lzss->window_offset - copy_offset;
@@ -9986,6 +10117,10 @@ static dmc_unrar_size_t dmc_unrar_lzss_emit_copy_overhang(dmc_unrar_lzss *lzss, 
 	dmc_unrar_size_t buffer_size, dmc_unrar_size_t buffer_offset, dmc_unrar_size_t *running_output_count) {
 
 	DMC_UNRAR_ASSERT(lzss);
+
+	/* Short-circuit if a previous emit_copy already flagged an error. */
+	if (lzss->error)
+		return buffer_offset;
 
 	if (lzss->copy_size == 0)
 		return buffer_offset;
@@ -11794,7 +11929,7 @@ static dmc_unrar_return dmc_unrar_filters_rar4_parse(dmc_unrar_filters *filters,
 	} else
 		filter_length = dmc_unrar_filters_rar4_read_number(&bs);
 
-	if (filter_length >= DMC_UNRAR_FILTERS_MEMORY_SIZE)
+	if (filter_length == 0 || filter_length >= DMC_UNRAR_FILTERS_MEMORY_SIZE)
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 
 	/* Registers. */
@@ -12413,6 +12548,13 @@ static void dmc_unrar_filters_x86_filter(uint8_t *memory, dmc_unrar_size_t lengt
 	const int32_t file_size = 0x1000000;
 	dmc_unrar_size_t i;
 
+	/* The loop below reads memory[i..i+4]; guard against an unsigned
+	   underflow in `length - 5` when length is too small. Callers are
+	   supposed to reject short filter inputs, but belt-and-braces here
+	   makes the primitive safe on its own. */
+	if (length < 5)
+		return;
+
 	for (i = 0; i <= length - 5; i++) {
 		if ((memory[i] == 0xE8) || (handle_e9 && (memory[i] == 0xE9))) {
 			int32_t cur_pos = file_pos + i + 1, address;
@@ -12438,7 +12580,9 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_func(uint8_t *memory, dmc_unrar
 		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
 		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	if ((in_length > memory_size) || (in_length < 4))
+	/* The x86 filter reads 5 bytes per window (memory[i..i+4]), so we
+	   need at least 5 bytes of input to run it safely. */
+	if ((in_length > memory_size) || (in_length < 5))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 	if (file_position >= 0x7FFFFFFF)
 		return DMC_UNRAR_FILTERS_INVALID_FILE_POSITION;
@@ -12456,7 +12600,9 @@ static dmc_unrar_return dmc_unrar_filters_30_x86_e9_func(uint8_t *memory, dmc_un
 		dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
 		dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	if ((in_length > memory_size) || (in_length < 4))
+	/* The x86 filter reads 5 bytes per window (memory[i..i+4]), so we
+	   need at least 5 bytes of input to run it safely. */
+	if ((in_length > memory_size) || (in_length < 5))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 	if (file_position >= 0x7FFFFFFF)
 		return DMC_UNRAR_FILTERS_INVALID_FILE_POSITION;
@@ -12570,6 +12716,13 @@ static dmc_unrar_return dmc_unrar_filters_rar5_parse(dmc_unrar_filters *filters,
 	dmc_unrar_size_t filter_length = dmc_unrar_filters_rar5_read_number(bs);
 	uint8_t filter_type = dmc_unrar_bs_read_bits(bs, 3);
 
+	/* A zero-length filter would make the decompressor ask the bitstream
+	   for a zero-byte block and wedge the subsequent fixed asserts; an
+	   oversized one would exceed the filter memory bound. Both are
+	   malformed inputs. */
+	if (filter_length == 0 || filter_length >= DMC_UNRAR_FILTERS_MEMORY_SIZE)
+		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
+
 	if (!dmc_unrar_filters_grow_filters(filters))
 		return DMC_UNRAR_ALLOC_FAIL;
 
@@ -12641,7 +12794,9 @@ static dmc_unrar_return dmc_unrar_filters_50_x86_func(uint8_t *memory, dmc_unrar
 	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
 	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	if ((in_length > memory_size) || (in_length < 4))
+	/* The x86 filter reads 5 bytes per window (memory[i..i+4]), so we
+	   need at least 5 bytes of input to run it safely. */
+	if ((in_length > memory_size) || (in_length < 5))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 	if (file_position >= 0x7FFFFFFF)
 		return DMC_UNRAR_FILTERS_INVALID_FILE_POSITION;
@@ -12659,7 +12814,9 @@ static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, dmc_un
 	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
 	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
-	if ((in_length > memory_size) || (in_length < 4))
+	/* The x86 filter reads 5 bytes per window (memory[i..i+4]), so we
+	   need at least 5 bytes of input to run it safely. */
+	if ((in_length > memory_size) || (in_length < 5))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 	if (file_position >= 0x7FFFFFFF)
 		return DMC_UNRAR_FILTERS_INVALID_FILE_POSITION;
@@ -12675,6 +12832,11 @@ static dmc_unrar_return dmc_unrar_filters_50_x86_e9_func(uint8_t *memory, dmc_un
 
 static void dmc_unrar_filters_50_arm_filter(uint8_t *memory, dmc_unrar_size_t length, int32_t file_pos) {
 	dmc_unrar_size_t i;
+
+	/* Guard the same unsigned-underflow class as the x86 filter; the
+	   loop reads memory[i..i+3] so we need at least 4 bytes. */
+	if (length < 4)
+		return;
 
 	for (i = 0; i <= length - 4; i += 4) {
 		if (memory[i + 3] == 0xEB) {
@@ -12693,6 +12855,7 @@ static dmc_unrar_return dmc_unrar_filters_50_arm_func(uint8_t *memory, dmc_unrar
 	dmc_unrar_size_t file_position, dmc_unrar_size_t in_length, const uint32_t *registers,
 	dmc_unrar_size_t *out_offset, dmc_unrar_size_t *out_length) {
 
+	/* The ARM filter reads 4 bytes per window (memory[i..i+3]). */
 	if ((in_length > memory_size) || (in_length < 4))
 		return DMC_UNRAR_FILTERS_INVALID_LENGTH;
 	if (file_position >= 0x7FFFFFFF)
