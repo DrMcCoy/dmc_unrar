@@ -1939,23 +1939,69 @@ static dmc_unrar_size_t dmc_unrar_io_sub_read_func(void *opaque, void *buffer, d
 
 static bool dmc_unrar_io_sub_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	dmc_unrar_sub_reader *sub;
+	uint64_t sub_end, parent_pos, back;
+	dmc_unrar_offset_t offset_max;
 
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
 		return false;
 
 	sub = (dmc_unrar_sub_reader *)opaque;
 
-	if (origin == DMC_UNRAR_SEEK_SET) {
-		offset += sub->start_offset;
-	} else if (origin == DMC_UNRAR_SEEK_END) {
-		offset += sub->start_offset + sub->size;
-		origin = DMC_UNRAR_SEEK_SET;
-	}
+	/* Max positive value representable in the signed offset type. */
+	offset_max = (dmc_unrar_offset_t)(((dmc_unrar_size_t)-1) >> 1);
 
-	if (!dmc_unrar_io_seek(sub->parent, offset, origin))
+	/* start_offset + size must fit in uint64_t. A malformed archive could
+	   place a sub-region at a location that overflows; reject up front so
+	   the rest of the function can treat sub_end as valid. */
+	if (!dmc_unrar_u64_add_ok(sub->start_offset, sub->size, &sub_end))
 		return false;
 
-	sub->offset = dmc_unrar_io_tell(sub->parent) - sub->start_offset;
+	/* Normalize every (offset, origin) to an absolute parent position.
+	   All arithmetic is in uint64_t with overflow checks; the signed
+	   offset is converted to an unsigned magnitude via wrap-around
+	   subtraction so INT*_MIN is handled safely. */
+	if (origin == DMC_UNRAR_SEEK_SET) {
+		if (offset < 0)
+			return false;
+		if (!dmc_unrar_u64_add_ok(sub->start_offset, (uint64_t)offset, &parent_pos))
+			return false;
+	} else if (origin == DMC_UNRAR_SEEK_END) {
+		/* Positive offsets from end point past the sub's end. */
+		if (offset > 0)
+			return false;
+		back = (uint64_t)0 - (uint64_t)offset;
+		if (back > sub->size)
+			return false;
+		parent_pos = sub_end - back;
+	} else { /* DMC_UNRAR_SEEK_CUR */
+		/* Current absolute parent position = start_offset + sub->offset.
+		   Invariant: sub->offset <= sub->size, maintained on every seek. */
+		uint64_t cur_parent;
+		if (!dmc_unrar_u64_add_ok(sub->start_offset, sub->offset, &cur_parent))
+			return false;
+		if (offset < 0) {
+			back = (uint64_t)0 - (uint64_t)offset;
+			if (back > sub->offset)
+				return false;
+			parent_pos = cur_parent - back;
+		} else {
+			if (!dmc_unrar_u64_add_ok(cur_parent, (uint64_t)offset, &parent_pos))
+				return false;
+		}
+	}
+
+	/* The final position must lie within the sub's window. */
+	if (parent_pos < sub->start_offset || parent_pos > sub_end)
+		return false;
+
+	/* Must be representable as a signed offset for the parent call. */
+	if (parent_pos > (uint64_t)offset_max)
+		return false;
+
+	if (!dmc_unrar_io_seek(sub->parent, (dmc_unrar_offset_t)parent_pos, DMC_UNRAR_SEEK_SET))
+		return false;
+
+	sub->offset = parent_pos - sub->start_offset;
 	return true;
 }
 
