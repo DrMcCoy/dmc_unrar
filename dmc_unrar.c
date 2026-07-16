@@ -1706,23 +1706,47 @@ static dmc_unrar_size_t dmc_unrar_io_mem_read_func(void *opaque, void *buffer, d
 }
 
 static bool dmc_unrar_io_mem_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
+	dmc_unrar_mem_reader *mem;
+	dmc_unrar_offset_t offset_max, cur, end, new_offset;
+
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
 		return false;
 
-	{
-		dmc_unrar_mem_reader *mem = (dmc_unrar_mem_reader *)opaque;
+	mem = (dmc_unrar_mem_reader *)opaque;
 
-		if (origin == DMC_UNRAR_SEEK_CUR) {
-			/* TODO: Validate offset */
-			offset += mem->offset;
-		} else if (origin == DMC_UNRAR_SEEK_END) {
-			/* TODO: Validate offset */
-			offset += mem->size;
-		}
+	/* Max positive value of dmc_unrar_offset_t. Max-unsigned >> 1 strips
+	   the sign bit, giving the max representable positive offset. */
+	offset_max = (dmc_unrar_offset_t)(((dmc_unrar_size_t)-1) >> 1);
 
-		mem->offset = offset;
+	/* Pathological state: size or current position too large to express as
+	   a signed offset. Should not happen for real archives -- the library
+	   constructs mem_reader with size = dmc_unrar_size_t, which matches
+	   offset_t width on every supported platform. */
+	if (mem->size > (uint64_t)offset_max || mem->offset > (uint64_t)offset_max)
+		return false;
+
+	cur = (dmc_unrar_offset_t)mem->offset;
+	end = (dmc_unrar_offset_t)mem->size;
+
+	if (origin == DMC_UNRAR_SEEK_SET) {
+		new_offset = offset;
+	} else if (origin == DMC_UNRAR_SEEK_CUR) {
+		new_offset = cur + offset;
+		/* Signed add overflow/underflow. */
+		if (offset > 0 && new_offset < cur) return false;
+		if (offset < 0 && new_offset > cur) return false;
+	} else { /* DMC_UNRAR_SEEK_END */
+		new_offset = end + offset;
+		if (offset > 0 && new_offset < end) return false;
+		if (offset < 0 && new_offset > end) return false;
 	}
 
+	/* Reject negative and past-end seeks. The reader backs a fixed buffer,
+	   so past-end has no meaning and is treated as a seek failure. */
+	if (new_offset < 0 || (uint64_t)new_offset > mem->size)
+		return false;
+
+	mem->offset = (uint64_t)new_offset;
 	return true;
 }
 
@@ -2696,6 +2720,30 @@ static dmc_unrar_return dmc_unrar_cancel_check(dmc_unrar_archive *archive) {
 	return DMC_UNRAR_OK;
 }
 
+/* Compute `block->start_pos + block->header_size + block->data_size` with
+   overflow and end-of-stream checks. Returns false on overflow or when the
+   end of the block would lie past the end of the archive stream. Used
+   before seeking past a block to parse the next one: a malformed archive
+   can otherwise cause the sum to wrap and seek to a fake valid position. */
+static bool dmc_unrar_block_end_pos(const dmc_unrar_block_header *block,
+		dmc_unrar_size_t stream_size, uint64_t *end_pos) {
+	uint64_t a, b;
+
+	a = block->start_pos + block->header_size;
+	if (a < block->start_pos)
+		return false;
+
+	b = a + block->data_size;
+	if (b < a)
+		return false;
+
+	if (b > (uint64_t)stream_size)
+		return false;
+
+	*end_pos = b;
+	return true;
+}
+
 /* Enforce the declared-size caps for one file entry: per-file size, running
    cumulative total, and compression ratio. Updates the running total on
    success. Returns DMC_UNRAR_INVALID_DATA on any cap breach. */
@@ -2856,8 +2904,14 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 			}
 
 			/* Seek past this block, so we can read the next one. */
-			if (!dmc_unrar_io_seek(&archive->io, block->start_pos + block->header_size + block->data_size, DMC_UNRAR_SEEK_SET))
-				return DMC_UNRAR_SEEK_FAIL;
+			{
+				uint64_t end_pos;
+				if (!dmc_unrar_block_end_pos(block, archive->io.size, &end_pos))
+					return DMC_UNRAR_INVALID_DATA;
+				if (!dmc_unrar_io_seek(&archive->io, (dmc_unrar_offset_t)end_pos,
+				                       DMC_UNRAR_SEEK_SET))
+					return DMC_UNRAR_SEEK_FAIL;
+			}
 		}
 	}
 
@@ -3312,8 +3366,14 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 			}
 
 			/* Seek past this block, so we can read the next one. */
-			if (!dmc_unrar_io_seek(&archive->io, block->start_pos + block->header_size + block->data_size, DMC_UNRAR_SEEK_SET))
-				return DMC_UNRAR_SEEK_FAIL;
+			{
+				uint64_t end_pos;
+				if (!dmc_unrar_block_end_pos(block, archive->io.size, &end_pos))
+					return DMC_UNRAR_INVALID_DATA;
+				if (!dmc_unrar_io_seek(&archive->io, (dmc_unrar_offset_t)end_pos,
+				                       DMC_UNRAR_SEEK_SET))
+					return DMC_UNRAR_SEEK_FAIL;
+			}
 		}
 	}
 
