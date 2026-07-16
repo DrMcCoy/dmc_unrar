@@ -11443,7 +11443,7 @@ static bool dmc_unrar_filters_init_stack(dmc_unrar_filters *filters) {
 		dmc_unrar_malloc(filters->alloc, filters->internal_state->stack_capacity,
 		                 sizeof(dmc_unrar_filters_stack_entry));
 
-	return filters->internal_state->filters != NULL;
+	return filters->internal_state->stack != NULL;
 }
 
 static bool dmc_unrar_filters_ensure_capacity_stack(dmc_unrar_filters *filters) {
