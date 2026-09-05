@@ -98,6 +98,7 @@
  *   - Set some default limits to prevent zip bombs
  *   - Added loads of bounds and otherwise safety checks
  *   - Added several tuneable security checks
+ * - Turned DMC_UNRAR_DISABLE_HEADER_CRC_CHECK into a run-time choice
  *
  * Friday, 2020-07-21 (Version 1.7.0)
  * - Changed internal I/O interface to be more flexible
@@ -261,7 +262,11 @@
  * headers whose stored CRC does not match. Off by default (i.e. enforcement
  * is on): a bad header CRC causes dmc_unrar_archive_open() to fail with
  * DMC_UNRAR_INVALID_DATA. Historical archives written by broken tools may
- * need this opt-out. */
+ * need this opt-out.
+ *
+ * In fact, this is a run-time choice now. See disable_header_crc_check in
+ * struct dmc_unrar_archive_tag. However, DMC_UNRAR_DISABLE_HEADER_CRC_CHECK
+ * determines the default as set by dmc_unrar_archive_init(). */
 #ifndef DMC_UNRAR_DISABLE_HEADER_CRC_CHECK
 #define DMC_UNRAR_DISABLE_HEADER_CRC_CHECK 0
 #endif
@@ -852,6 +857,21 @@ typedef struct dmc_unrar_archive_tag {
 	 *  an archive and may be changed between library calls, for example after
 	 *  open and before extraction. */
 	dmc_unrar_cancel cancel;
+
+	/* Set disable_header_crc_check to true before opening an archive to accept
+	 * RAR4 and RAR5 block headers whose stored CRC does not match. If this is
+	 * off (i.e. enforcement is on), a bad header CRC causes
+	 * dmc_unrar_archive_open() to fail with DMC_UNRAR_INVALID_DATA.
+	 * Historical archives written by broken tools may need this opt-out.
+	 *
+	 * By default this is false, which means CRC enforcement is on. However,
+	 * if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK has been defined and set to 1,
+	 * dmc_unrar_archive_init() sets it to true, which means enforcement is
+	 * off by default. This option is there to stay compatible with previous
+	 * versions of dmc_unrar where only DMC_UNRAR_DISABLE_HEADER_CRC_CHECK
+	 * existed, while still turning this option into a run-time choice.
+	 */
+	bool disable_header_crc_check;
 
 } dmc_unrar_archive;
 
@@ -2427,6 +2447,10 @@ dmc_unrar_return dmc_unrar_archive_init(dmc_unrar_archive *archive) {
 
 	DMC_UNRAR_CLEAR_OBJ(*archive);
 
+#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK == 1
+	archive->disable_header_crc_check = true;
+#endif
+
 	return DMC_UNRAR_OK;
 }
 
@@ -3110,7 +3134,6 @@ static dmc_unrar_return dmc_unrar_rar4_collect_blocks(dmc_unrar_archive *archive
 	return dmc_unrar_connect_solid(archive);
 }
 
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
 /* Validate a RAR4 block-header CRC. The header runs [start_pos,
    start_pos + header_size) with the 2-byte CRC field at start_pos; the
    stored value is the low 16 bits of a CRC-32 over
@@ -3164,7 +3187,6 @@ done:
 	}
 	return rc;
 }
-#endif /* DMC_UNRAR_DISABLE_HEADER_CRC_CHECK */
 
 /** Read a RAR4 block header. */
 static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *archive,
@@ -3196,13 +3218,11 @@ static dmc_unrar_return dmc_unrar_rar4_read_block_header(dmc_unrar_archive *arch
 	if (block->header_size < 7)
 		return DMC_UNRAR_INVALID_DATA;
 
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
-	{
+	if (!archive->disable_header_crc_check) {
 		dmc_unrar_return crc_rc = dmc_unrar_rar4_validate_header_crc(archive, block);
 		if (crc_rc != DMC_UNRAR_OK)
 			return crc_rc;
 	}
-#endif
 
 	/* Does the block have data attached, after the header?. */
 	{
@@ -3584,7 +3604,6 @@ static dmc_unrar_return dmc_unrar_rar5_collect_blocks(dmc_unrar_archive *archive
 	return dmc_unrar_connect_solid(archive);
 }
 
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
 /* Validate a RAR5 block-header CRC. Covers [crc_end_pos, start_pos + header_size):
    the HeaderSize VLQ field followed by the HeaderSize bytes of header content.
    The stored CRC is a full 32-bit CRC-32 (not truncated, unlike RAR4).
@@ -3638,35 +3657,29 @@ static dmc_unrar_return dmc_unrar_rar5_validate_header_crc(dmc_unrar_archive *ar
 
 	return (crc32 == block->crc) ? DMC_UNRAR_OK : DMC_UNRAR_INVALID_DATA;
 }
-#endif /* DMC_UNRAR_DISABLE_HEADER_CRC_CHECK */
 
 /** Read a RAR5 block header. */
 static dmc_unrar_return dmc_unrar_rar5_read_block_header(dmc_unrar_archive *archive,
 	dmc_unrar_block_header *block) {
 
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
 	uint64_t crc_end_pos;
-#endif
 
 	DMC_UNRAR_ASSERT(archive && block);
 
 	if (!dmc_unrar_io_read_uint32le(&archive->io, &block->crc))
 		return DMC_UNRAR_READ_FAIL;
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
+
 	crc_end_pos = (uint64_t)dmc_unrar_io_tell(&archive->io);
-#endif
 	if (!dmc_unrar_rar5_read_number(&archive->io, &block->header_size))
 		return DMC_UNRAR_READ_FAIL;
 
 	block->start_pos = dmc_unrar_io_tell(&archive->io);
 
-#if DMC_UNRAR_DISABLE_HEADER_CRC_CHECK != 1
-	{
+	if (!archive->disable_header_crc_check) {
 		dmc_unrar_return crc_rc = dmc_unrar_rar5_validate_header_crc(archive, block, crc_end_pos);
 		if (crc_rc != DMC_UNRAR_OK)
 			return crc_rc;
 	}
-#endif
 
 	if (!dmc_unrar_rar5_read_number(&archive->io, &block->type))
 		return DMC_UNRAR_READ_FAIL;
