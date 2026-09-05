@@ -584,15 +584,14 @@ typedef DMC_UNRAR_OFFSET_T dmc_unrar_offset_t;
 	#endif
 #endif
 
-#if DMC_UNRAR_DISABLE_STDIO != 1 && DMC_UNRAR_DISABLE_WIN32 == 1
+#if (DMC_UNRAR_DISABLE_STDIO != 1) && (DMC_UNRAR_DISABLE_WIN32 == 1)
+	#include <errno.h>
+	#include <fcntl.h>
+
 	#if defined(_WIN32)
-		#include <errno.h>
-		#include <fcntl.h>
 		#include <io.h>
 		#include <sys/stat.h>
 	#else
-		#include <errno.h>
-		#include <fcntl.h>
 		#include <sys/stat.h>
 		#include <unistd.h>
 	#endif
