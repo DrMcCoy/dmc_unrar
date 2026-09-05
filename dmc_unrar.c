@@ -90,7 +90,7 @@
 
 /* Version history:
  *
- * Someday, ????-??-?? (Version ?)
+ * Saturday, 2026-09-05 (Version 1.8.0)
  * - Pulled in several changes from itch.io's fork (thanks to leaf corcoran!):
  *   - Fixed RAR5 solid extraction
  *   - Added support for cancellation
@@ -613,9 +613,9 @@ typedef int              (*dmc_unrar_seek_func)(void *opaque, dmc_unrar_offset_t
 extern "C" {
 #endif
 
-#define DMC_UNRAR_VERSION "1.7.0"
+#define DMC_UNRAR_VERSION "1.8.0"
 #define DMC_UNRAR_VERSION_MAJOR 1
-#define DMC_UNRAR_VERSION_MINOR 7
+#define DMC_UNRAR_VERSION_MINOR 8
 #define DMC_UNRAR_VERSION_PATCH 0
 #define DMC_UNRAR_VERSION_FULL ( (DMC_UNRAR_VERSION_MAJOR * 100000) + (DMC_UNRAR_VERSION_MINOR * 10000) + (DMC_UNRAR_VERSION_PATCH) )
 
