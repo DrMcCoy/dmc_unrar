@@ -5058,7 +5058,7 @@ static bool dmc_unrar_win32_rename_with_flags(const char *src, const char *dst, 
 	return ok;
 }
 
-#if !DMC_UNRAR_REJECT_OVERWRITE
+#if DMC_UNRAR_REJECT_OVERWRITE != 1
 static bool dmc_unrar_win32_rename(const char *src, const char *dst) {
 	/* Replace an existing target, matching POSIX rename() semantics. */
 	return dmc_unrar_win32_rename_with_flags(src, dst, MOVEFILE_REPLACE_EXISTING);
@@ -5192,7 +5192,7 @@ static FILE *dmc_unrar_fopen_write_exclusive(const char *path, bool *already_exi
 #endif
 }
 
-#if !DMC_UNRAR_REJECT_OVERWRITE
+#if DMC_UNRAR_REJECT_OVERWRITE != 1
 static bool dmc_unrar_rename(const char *src, const char *dst) {
 #if DMC_UNRAR_DISABLE_WIN32 == 1
 	return rename(src, dst) == 0;
@@ -5206,9 +5206,9 @@ static bool dmc_unrar_rename(const char *src, const char *dst) {
 	#endif
 #endif
 }
-#endif /* !DMC_UNRAR_REJECT_OVERWRITE */
+#endif /* DMC_UNRAR_REJECT_OVERWRITE != 1 */
 
-#if DMC_UNRAR_REJECT_OVERWRITE && DMC_UNRAR_DISABLE_WIN32 != 1
+#if (DMC_UNRAR_REJECT_OVERWRITE == 1) && (DMC_UNRAR_DISABLE_WIN32 != 1)
 static bool dmc_unrar_rename_no_replace(const char *src, const char *dst) {
 	#if DMC_UNRAR_DISABLE_MALLOC == 1
 		return MoveFileExA(src, dst, 0) != 0;
@@ -5216,9 +5216,9 @@ static bool dmc_unrar_rename_no_replace(const char *src, const char *dst) {
 		return dmc_unrar_win32_rename_with_flags(src, dst, 0);
 	#endif
 }
-#endif /* DMC_UNRAR_REJECT_OVERWRITE && DMC_UNRAR_DISABLE_WIN32 != 1 */
+#endif /* (DMC_UNRAR_REJECT_OVERWRITE == 1) && (DMC_UNRAR_DISABLE_WIN32 != 1) */
 
-#if DMC_UNRAR_REJECT_OVERWRITE
+#if DMC_UNRAR_REJECT_OVERWRITE == 1
 /* Return true if `path` names any existing filesystem entry (file, dir,
    symlink, ...). On the WIN32 path this is a simple attribute probe; on
    POSIX this uses lstat() so dangling symlinks are rejected before
@@ -5245,7 +5245,7 @@ static bool dmc_unrar_file_exists(const char *path) {
 	#endif
 #endif
 }
-#endif /* DMC_UNRAR_REJECT_OVERWRITE */
+#endif /* DMC_UNRAR_REJECT_OVERWRITE == 1 */
 
 static void dmc_unrar_unlink(const char *path) {
 #if DMC_UNRAR_DISABLE_WIN32 == 1
@@ -5318,7 +5318,7 @@ static FILE *dmc_unrar_open_unique_temp_file(dmc_unrar_archive *archive,
 }
 
 static dmc_unrar_return dmc_unrar_publish_temp_file(const char *temp_path, const char *path) {
-#if DMC_UNRAR_REJECT_OVERWRITE
+#if DMC_UNRAR_REJECT_OVERWRITE == 1
 	#if DMC_UNRAR_DISABLE_WIN32 == 1
 		#if defined(_WIN32)
 			if (rename(temp_path, path) == 0)
@@ -5346,7 +5346,7 @@ static dmc_unrar_return dmc_unrar_publish_temp_file(const char *temp_path, const
 	if (dmc_unrar_rename(temp_path, path))
 		return DMC_UNRAR_OK;
 	return DMC_UNRAR_WRITE_FAIL;
-#endif
+#endif /* DMC_UNRAR_REJECT_OVERWRITE == 1 */
 }
 
 #if DMC_UNRAR_REJECT_WINDOWS_RESERVED_NAMES
@@ -5528,7 +5528,7 @@ static dmc_unrar_return dmc_unrar_extract_file_to_path_impl(dmc_unrar_archive *a
 			return safety;
 	}
 
-#if DMC_UNRAR_REJECT_OVERWRITE
+#if DMC_UNRAR_REJECT_OVERWRITE == 1
 	/* Pre-flight: reject before decompressing if the target already exists.
 	   The check fires for both the safe and unsafe variants because it
 	   concerns the caller-provided target path, not the archive name.
