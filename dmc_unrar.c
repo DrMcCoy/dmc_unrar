@@ -475,6 +475,10 @@ typedef DMC_UNRAR_OFFSET_T dmc_unrar_offset_t;
 
 #define DMC_UNRAR_SIZE_MAX ((dmc_unrar_size_t)((dmc_unrar_offset_t)-1))
 
+/* Max positive value of dmc_unrar_offset_t. Max-unsigned >> 1 strips
+   the sign bit, giving the max representable positive offset. */
+#define DMC_UNRAR_OFFSET_MAX ((dmc_unrar_offset_t)(((dmc_unrar_size_t)-1) >> 1))
+
 /* --- System autodetection --- */
 
 /* Autodetecting whether we're on a 64-bit CPU. */
@@ -1869,22 +1873,18 @@ static dmc_unrar_size_t dmc_unrar_io_mem_read_func(void *opaque, void *buffer, d
 
 static bool dmc_unrar_io_mem_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	dmc_unrar_mem_reader *mem;
-	dmc_unrar_offset_t offset_max, cur, end, new_offset;
+	dmc_unrar_offset_t cur, end, new_offset;
 
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
 		return false;
 
 	mem = (dmc_unrar_mem_reader *)opaque;
 
-	/* Max positive value of dmc_unrar_offset_t. Max-unsigned >> 1 strips
-	   the sign bit, giving the max representable positive offset. */
-	offset_max = (dmc_unrar_offset_t)(((dmc_unrar_size_t)-1) >> 1);
-
 	/* Pathological state: size or current position too large to express as
 	   a signed offset. Should not happen for real archives -- the library
 	   constructs mem_reader with size = dmc_unrar_size_t, which matches
 	   offset_t width on every supported platform. */
-	if (mem->size > (uint64_t)offset_max || mem->offset > (uint64_t)offset_max)
+	if (mem->size > (uint64_t)DMC_UNRAR_OFFSET_MAX || mem->offset > (uint64_t)DMC_UNRAR_OFFSET_MAX)
 		return false;
 
 	cur = (dmc_unrar_offset_t)mem->offset;
@@ -1973,15 +1973,11 @@ static dmc_unrar_size_t dmc_unrar_io_sub_read_func(void *opaque, void *buffer, d
 static bool dmc_unrar_io_sub_seek_func(void *opaque, dmc_unrar_offset_t offset, int origin) {
 	dmc_unrar_sub_reader *sub;
 	uint64_t sub_end, parent_pos, back;
-	dmc_unrar_offset_t offset_max;
 
 	if (!opaque || origin < DMC_UNRAR_SEEK_SET || origin > DMC_UNRAR_SEEK_END)
 		return false;
 
 	sub = (dmc_unrar_sub_reader *)opaque;
-
-	/* Max positive value representable in the signed offset type. */
-	offset_max = (dmc_unrar_offset_t)(((dmc_unrar_size_t)-1) >> 1);
 
 	/* start_offset + size must fit in uint64_t. A malformed archive could
 	   place a sub-region at a location that overflows; reject up front so
@@ -2028,7 +2024,7 @@ static bool dmc_unrar_io_sub_seek_func(void *opaque, dmc_unrar_offset_t offset, 
 		return false;
 
 	/* Must be representable as a signed offset for the parent call. */
-	if (parent_pos > (uint64_t)offset_max)
+	if (parent_pos > (uint64_t)DMC_UNRAR_OFFSET_MAX)
 		return false;
 
 	if (!dmc_unrar_io_seek(sub->parent, (dmc_unrar_offset_t)parent_pos, DMC_UNRAR_SEEK_SET))
